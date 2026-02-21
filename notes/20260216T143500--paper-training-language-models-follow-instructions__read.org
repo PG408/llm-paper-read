@@ -1,0 +1,129 @@
+#+title:      paper-training-language-models-follow-instructions
+#+date:       [2026-02-16 Mon 14:35]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260216T143500
+#+source:     https://ar5iv.labs.arxiv.org/html/2203.02155
+#+authors:    Long Ouyang; Jeff Wu; Xu Jiang; Diogo Almeida; Carroll L. Wainwright; Pamela Mishkin; Chong Zhang; Sandhini Agarwal; Katarina Slama; Alex Ray; John Schulman; Jacob Hilton; Fraser Kelton; Luke Miller; Maddie Simens; Amanda Askell; Peter Welinder; Paul Christiano; Jan Leike; Ryan Lowe
+#+venue:      arXiv preprint (2022)
+
+* PLAIN TALK
+
+预训练大模型学的是“网上文章怎么接着写”，不是“用户要我做什么”，所以经常跑题、瞎编，甚至输出不当内容。本文用两类人类反馈把“更好回答”变成可训练目标：先让标注者写示范答案做监督微调，再训练一个偏好打分器，然后用 PPO 强化学习让模型追求高分，同时用 KL 惩罚把它拴在监督模型附近。结果上，人评里 1.3B 的 InstructGPT 比 175B 的原版 GPT-3 更受欢迎；TruthfulQA 上更真诚（大约翻倍），闭域任务幻觉率从 41% 降到 21%，在“请保持尊重”的提示下毒性约下降 25%。
+
+* LANDSCAPE
+
+#+begin_example
+2017  RL from human preferences (reward model from comparisons)
+  |
+2019  GPT-2  scale pretraining -> strong continuation ability
+  |
+2020  GPT-3  few-shot prompting, but instruction-following is brittle
+  |
+2020  Summarization w/ human feedback  *TURN*  RLHF pipeline works
+  |
+2021  WebGPT  tool-assisted QA + human preference data
+  |
+2021  Instruction tuning (FLAN, T0)  supervised follow-instruction
+  |
+2022  InstructGPT  SFT + RM + PPO (+ pretrain-mix)  [*THIS*]
+      key result: 1.3B aligned > 175B base (human preference)
+      limit: aligns to specific labelers; bias not fixed; reward hacking risk
+#+end_example
+
+* NAPKIN FORMULA
+
+#+begin_example
++--------------------------------------------------------------------+
+| maximize: RM(prompt, answer)                                       |
+|         - beta * KL(pi(answer|prompt) || pi_sft(answer|prompt))    |
+|         + gamma * log pi(answer_ptx|prompt_ptx)    (PPO-ptx only)  |
++--------------------------------------------------------------------+
+#+end_example
+
+RM 是 *奖励模型*  输入“用户指令 prompt + 模型回答 answer”  输出一个分数，近似表示“标注者更喜欢这条回答的程度”。pi 是当前正在训练的策略模型，pi_sft 是监督微调后的参考模型；KL 表示“与参考模型差得有多远”，beta 控制“别跑偏”的力度。PPO-ptx 会额外混入一部分预训练分布的梯度（用 gamma 控制强度）来减少在公共 NLP 任务上的能力退化。
+
+* PROBLEM
+
+*痛点定义*: 让语言模型在真实用户指令上更“听话”、更真实、更少有害输出，并且能在部署后持续改进。
+
+*前人困境*:
+- *目标函数不匹配*  预训练的“预测下一个 token”不等价于“对用户有用且安全”
+- *只堆规模不够*  模型更大会更会写，但不必然更会按要求做事，也不必然更可靠
+- *监督数据不够表达偏好*  只给标准答案很难覆盖“哪些回答更好/更差”的细粒度差异
+- *评测脱离真实使用*  公共基准未必代表真实 API 用户的提示分布与约束形式
+
+* INSIGHT
+
+*核心直觉*: 先用示范把模型推到“基本会按指令答”的区域，再用偏好学习得到一个可微的“人类喜欢度打分器”，最后用强化学习直接优化这个分数，同时用 KL 惩罚防止为了刷分出现怪异行为。
+
+*关键步骤*:
+1. *数据形态*  三套数据三种作用：SFT 用 *示范* (约 13k 训练 prompts)，RM 用 *排序* (约 33k 训练 prompts），PPO 用 *无标注 prompts* (约 31k，来自 API）。做去重（按长公共前缀）、每个用户最多 200 条、按 user id 切分 train/val/test，并过滤训练集的 PII。
+2. *奖励模型 RM 的训练技巧*  用 6B RM（更省算力且更稳定），输入 prompt+answer 输出标量奖励。为了加速收集，标注者一次会对 K=4..9 个候选回答做全排序，产生 C(K,2) 个配对比较；为避免“同一 prompt 内比较高度相关”导致过拟合，他们把同一 prompt 的所有配对作为一个 batch 元素训练。并做奖励归一化：让示范答案的平均分为 0，方便后续 PPO。
+3. *PPO + 安全绳*  RL 环境是 bandit：给一个 prompt，模型出一个回答就结束；奖励=RM 分数。训练时对每个 token 加 KL 惩罚（参考 pi_sft），价值函数从 RM 初始化。为减少公共 NLP 任务回退，引入 *PPO-ptx*：把预训练分布梯度混进 PPO 更新（论文默认 InstructGPT 指 PPO-ptx；附录给出示例系数 beta=0.02，gamma=27.8）。
+
+* DELTA
+
+*vs SOTA*:
+- *人类偏好上的“以小胜大”*  在测试 prompts 上，标注者更偏好 1.3B InstructGPT 而不是 175B GPT-3（架构相同，差异主要来自人类反馈微调）。
+- *大模型也显著提升*  175B InstructGPT 相比 175B GPT-3，直接对比的偏好胜率为 85 ± 3%；相对 few-shot 提示后的 GPT-3 胜率为 71 ± 4%。
+- *更真实，少幻觉*  TruthfulQA 上“真实且信息量足”的回答约为 GPT-3 的两倍；在闭域任务（如摘要、闭域 QA）里，幻觉率约 21% vs 41%。
+- *毒性下降但偏见不变*  RealToxicityPrompts 上，在“请保持尊重”的指令下毒性约减少 25%；但在 Winogender 与 CrowSPairs 上没有显著改善。
+- *更贴近真实产品指标*  除 win-rate 外，标注者还打 1-7 Likert 总体质量分，并标注“是否跑错任务”“是否满足显式约束”“是否更像客服助手”“是否幻觉”等元数据。
+
+*新拼图*:
+- 把“对齐用户意图”变成一条可复用的工程闭环：SFT -> RM -> PPO（再加 KL 安全绳）
+- 明确展示了一个关键事实：*对齐目标* 的改变，可能比 *参数规模* 的增加更影响用户体验
+- 给出能力保持的实用补丁：PPO 里混入预训练梯度（PPO-ptx）可显著降低公共任务回退
+
+* CRITIQUE
+
+*隐形假设*:
+- *偏好可代表用户*  奖励模型学的是“这批标注者更喜欢什么”，不等价于更广泛人群或不同文化下的偏好
+- *RM 可泛化且不被投机*  需要 RM 在新 prompt 上稳定打分，并且不被策略模型学会“刷分套路”（reward hacking）
+- *提示分布近似稳定*  训练 prompts 来自 API Playground 且多来自早期指令模型的用户用法；分布漂移或对抗性提示会让奖励失真
+- *KL 足够做护栏*  “离监督模型近”不必然等价于“更安全/更真实”，只能算弱约束
+
+*未解之谜*:
+- *价值冲突如何解*  “更有帮助”与“更安全/更真实”常冲突，训练阶段与最终评测的优先级也可能不一致
+- *偏见与群体伤害*  本文对毒性有改善，但对偏见基准无显著提升；如何系统性降低偏见仍悬而未决
+- *人类反馈规模化*  人工排序昂贵且慢，如何覆盖长尾任务、复杂多轮对话与工具使用仍是空白
+
+* LOGIC FLOW
+
+#+begin_example
+collect prompts (API Playground + labeler-written)
+  |
+  +--> demonstrations (~13k prompts) -> SFT -> pi_sft
+  |
+  +--> rankings (~33k prompts, K=4..9 answers) -> train RM (6B) -> reward
+  |
+  +--> PPO on prompts (~31k) with per-token KL to pi_sft
+         + optional pretrain-mix (PPO-ptx) to reduce capability regressions
+  |
+  v
+InstructGPT policy (aligned to labeler preferences)
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
+        (what users want)
+               ^
+               |
+    demos   rankings
+      |        |
+      v        v
+    +----+   +----+
+    |SFT |   | RM |
+    +----+   +----+
+      |        |
+      |   reward score
+      |        v
+      |     +------+
+      +---->| PPO  |-----> aligned model
+            +------+
+             ^
+             |
+        KL to pi_sft  (do not drift too far)
+#+end_example
+

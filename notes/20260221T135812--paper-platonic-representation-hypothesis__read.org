@@ -1,0 +1,136 @@
+#+title:      paper-platonic-representation-hypothesis
+#+date:       [2026-02-21 Sat 13:58]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260221T135812
+#+source:     https://arxiv.org/html/2405.07987
+#+authors:    Minyoung Huh; Brian Cheung; Tongzhou Wang; Phillip Isola
+#+venue:      arXiv (2024)
+
+* PLAIN TALK
+
+这篇论文问的是: 不同的 AI 模型(视觉/语言/不同结构)在越来越强、越来越大之后, 内部“想事情的方式”(向量表示)会不会越来越像.
+作者给出的回答是“会”: 很多强模型之间的表示更对齐, 甚至跨模态、与大脑数据也更对齐; 并提出一个解释框架: 如果现实世界有一套共同的统计结构, 那么学得越好越通用的模型就越会收敛到同一个“世界统计”的表示.
+
+* LANDSCAPE
+
+#+begin_example
+(领域主线: 表示学习 -> 对齐度量 -> 大模型多模态 -> "收敛假说")
+
+1997  Efficient coding / sparse coding (brain, stats of stimuli)
+2013  word2vec / distributional semantics (co-occurrence -> embedding)
+2014  deep vision models predict brain (task performance -> brain alignment)
+2018  InfoNCE / contrastive learning becomes mainstream
+2019  CKA (representation similarity) + model stitching (swap components)
+2020  SimCLR/SimCSE: contrastive at scale; "similarity = co-occurrence"
+2021  CLIP (vision-language shared space)  <=== turning point: cross-modal reps
+2023  LLaVA, multimodal LLMs, scaling across tasks  <=== foundation-model era
+2024  [*THIS*] Platonic Representation Hypothesis
+      - claim: strong models converge toward a shared, modality-agnostic rep
+      - candidate endpoint: "similarity ~ PMI of underlying world events"
+      - limits: relies on idealized bijective observations; alignment metric debated
+#+end_example
+
+* NAPKIN FORMULA
+
+#+begin_example
++-----------------------------------------------------------+
+| sim(emb(a), emb(b))  ~=  PMI_world(a,b)  +  const         |
+|                                                           |
+| PMI_world(a,b) = log( P_coor(a,b) / (P(a) * P(b)) )       |
++-----------------------------------------------------------+
+#+end_example
+
+这里 a,b 表示“世界事件/状态”的两个样本点; P_coor 表示它们在同一段时空窗口内共同出现的概率. 论文的核心主张是: 许多对比学习/自监督目标会逼着模型把“经常一起出现”的东西放得更近, 最终不同模态/不同结构都在逼近同一个世界共现统计.
+
+补充解释: emb(.) 表示模型学到的“把输入变成向量”的映射, sim(.) 表示两个向量的相似度(常见是点积或余弦). P(a) 和 P(b) 是事件各自出现的边缘概率; const 是与样本对无关的偏移量, 不影响“谁更相似”的排序结构.
+
+* PROBLEM
+
+*痛点定义*: 我们有越来越多强模型(不同架构、不同目标、甚至不同模态). 它们的内部向量表示到底是各学各的, 还是在变强的过程中会收敛到同一套“公共表示”.
+
+*前人困境*:
+- “对齐/相似”证据零散: 有的在视觉, 有的在 NLP, 有的在脑科学; 很难拼成统一叙事.
+- 即便观察到对齐, 也缺一个足够简单的“终点是什么”的候选描述.
+- 度量问题: 表示相似性指标很多(CKA/RSA/线性探针/最近邻等), 结论可能依赖指标.
+
+* INSIGHT
+
+*核心直觉*: 现实世界只有一套底层统计结构, 不同模态(像素/文字/声音)只是对同一“世界事件”的不同投影; 要在很多任务上都做得好, 模型就不得不学到那套共享结构, 所以强模型会越来越像.
+
+*关键步骤*:
+1. *现象学*: 汇总并补充实证: 对齐随着规模与泛化性能提升而上升; 视觉-语言之间也出现可测的对齐; 与脑数据的对齐也随模型变强而增强.
+2. *驱动力*: 给出三类“选择压力”解释收敛为什么会发生: 多任务/多数据约束让可行解集合变小; 更大容量更容易逼近共享最优解; 简单性偏置(Occam)倾向于选更“简洁/可复用”的内部结构.
+3. *一个可计算的终点候选*: 在理想化设定里(世界事件 Z + 各模态是 Z 的可逆观测), 常见对比学习目标会学到一种核/相似度, 近似等于世界事件的 PMI; 因为可逆观测保持概率, 不同模态会收敛到同一个 PMI 核, 从而天然对齐.
+
+* DELTA
+
+*vs SOTA*:
+- 把“表示对齐”从零散现象提升为一个可检验的研究命题, 并给出清晰的可证伪点(什么时候不该对齐).
+- 给出一个极简的理论锚点: 多类对比学习目标 -> 学到“相似度近似 PMI”.
+- 实证上做了更系统的对齐评估: 大量视觉模型(含不同架构/训练法)与多种语言模型之间的跨模态对齐, 并展示其与下游能力相关.
+
+*新拼图*: 用“世界共现统计(PMI 核)”把三件事连起来: (1) 对比学习为什么有效, (2) 为什么跨模态可线性/低复杂度对齐, (3) 为什么模型越强越像, 甚至更像大脑.
+
+* CRITIQUE
+
+*隐形假设*:
+- *高信息/近可逆观测*: 核心数学推导依赖“模态是 Z 的双射(可逆)”或至少信息足够高; 现实中语言/图像都很有损, 抽象概念更是非可逆.
+- *任务足够通用*: 结论更像是在“多任务通用智能”上成立; 窄任务的捷径解可能更高效, 未必收敛到同一表示.
+- *训练数据代表现实*: “收敛到现实模型”隐含训练数据覆盖足够广且偏差可控; 否则可能收敛到“互联网统计”而非“世界统计”.
+
+*未解之谜*:
+- *度量依赖*: 表示对齐的测量仍在争论; 即便对齐分数上升, 其绝对值是否“高”也难解释(论文里给出过仅 ~0.16 的案例并承认问题未解).
+- *因果方向*: 是“对齐导致能力”, 还是“规模/数据导致二者同时上升”.
+- *非双射与抽象*: 如何在非可逆观测、连续世界、抽象符号体系下定义更合理的“platonic 表示”.
+- *跨领域外推*: 机器人等领域数据瓶颈明显, 是否会出现同样强的收敛趋势仍待验证.
+- *社会学偏置*: 研究社区偏好、人类相似性目标、硬件生态都可能把模型推向某种“共同解”, 但不代表那是唯一或最优的智能形态.
+
+* LOGIC FLOW
+
+#+begin_example
+{
+  问题: 不同强模型的内部表示会不会越来越像?
+    |
+    | - 现象分散, 缺统一解释
+    | - 终点是什么不清楚, 度量还在吵
+    v
+  洞见: 现实世界有共享统计结构, 强模型必须学它
+    |
+    | - 多任务/多数据: 约束变多, 可行表示变少
+    | - 大容量: 更容易逼近共享最优解
+    | - 简单性偏置: 倾向选择可复用的简洁结构
+    v
+  方法: (1) 汇总+实证测量对齐 (2) 提供 PMI 终点候选
+    |
+    | - 跨模型/跨模态/跨大脑数据的对齐测量
+    | - 理想化推导: contrastive -> similarity ~ PMI
+    v
+  结果: 对齐随规模与能力上升; PMI 作为“共同骨架”解释收敛
+    |
+    | - 视觉/语言互相更对齐, 且对齐预测下游性能
+    | - 高信息输入(更密的 caption)可提高跨模态对齐
+}
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
++-------------------+        +-------------------+
+|   世界事件/状态 Z |        |   世界共现统计    |
+|  (latent reality) |------->| PMI_world(a,b)    |
++-------------------+        +-------------------+
+         |                               ^
+         | obs_x (pixels)                |
+         v                               |
++-------------------+     f_X     +-------------------+
+|  图像 x (vision)  |-----------> | emb_X(x)          |
++-------------------+             +-------------------+
+         |                               |
+         | obs_y (text)                  | sim(.,.) ~= PMI + const
+         v                               |
++-------------------+     f_Y      +-------------------+
+|  文字 y (language)|----------->  | emb_Y(y)          |
++-------------------+              +-------------------+
+
+对齐现象: 当模型更大/更通用时, emb_X 与 emb_Y 的“相似度结构”更接近同一个 PMI_world.
+#+end_example

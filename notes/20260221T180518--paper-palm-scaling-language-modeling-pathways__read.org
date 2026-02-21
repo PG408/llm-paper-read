@@ -1,0 +1,134 @@
+#+title:      paper-palm-scaling-language-modeling-pathways
+#+date:       [2026-02-21 Sat 18:05]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260221T180518
+#+source:     https://ar5iv.labs.arxiv.org/html/2204.02311
+#+authors:    Aakanksha Chowdhery, Sharan Narang, Jacob Devlin, et al.
+#+venue:      arXiv:2204.02311v5, 2022-10-05
+
+* PLAIN TALK
+
+这篇论文在解决一个“工程 + 能力”双重问题: 怎么把语言模型训练到几百0亿参数的量级，还能稳定、高效率地跑完，并且真的在不微调的情况下变得更会做题。
+作者用 Pathways 系统在 6144 颗 TPU v4 上训练了 540B 参数的 PaLM，喂了 780B tokens 的高质量语料，做了超大规模 few-shot 评测。
+结果是它在大量基准上达到当时的 few-shot SOTA，并在 BIG-bench 等一部分任务上出现“规模一上去就突然变强”的不连续跃迁。
+
+* LANDSCAPE
+
+#+begin_example
+Timeline (scaling LMs -> capability + system)
+
+2017  Transformer
+2020  Kaplan et al. scaling laws (smooth power-law gains)
+2020  GPT-3 175B -> few-shot becomes a main paradigm
+2021  GLaM / Switch (MoE) -> bigger capacity with sparse compute
+2021  Gopher / MT-NLG -> very large dense baselines
+2022  [TURN] Chinchilla -> compute-opt says "more tokens, fewer params"
+2022  [*THIS*] PaLM 540B + Pathways (pipeline-free on 6144 TPU v4 chips)
+      -> new emphasis: scale is gated by training efficiency (MFU) + stability
+      Limitation: extremely compute/infra heavy; token-per-param likely undertrained
+                  relative to compute-opt; bias/toxicity + memorization risks remain
+#+end_example
+
+* NAPKIN FORMULA
+
+#+begin_example
++---------------------------------------------------------------+
+| 1) Training speed (system):                                   |
+|    tokens_per_sec ~= (chips * peak_FLOPs * MFU) / flops_token |
+|                                                               |
+| 2) Capability (some tasks):                                   |
+|    score(task, N) ~= smooth_gain(log N)                       |
+|                    + I[N >= threshold(task)] * jump(task)     |
++---------------------------------------------------------------+
+#+end_example
+
+解释:
+- chips/peak_FLOPs/MFU: 训练系统“能把硬件算力兑现成有效训练”的能力；MFU 是论文提出的更可比的效率度量。
+- flops_token: 每处理 1 个 token 需要的理论计算量（对 dense Transformer 近似随参数量 N 增长）。
+- N: 模型参数规模；I[...]: 指示函数，表示是否跨过某个任务能力门槛；jump: 跨过门槛后出现的跃迁幅度。
+
+* PROBLEM
+
+*痛点定义*: 把语言模型扩到 500B+ 级别时，真正的瓶颈不止是“模型结构”，还包括训练系统效率、训练稳定性、数据配比与评测可信度；而我们也缺少对“规模变大后能力如何出现”的可解释描述。
+
+*前人困境*: 以前要么模型规模不够大、看不到新能力；要么训练依赖 pipeline 并行或单一系统，跨 Pod/跨集群的效率和稳定性很难做到“既大又快”；同时 few-shot 评测容易被数据污染/记忆混淆，结论难以站稳。
+
+* INSIGHT
+
+*核心直觉*: “更大模型”只有在“更高效的训练系统 + 更稳的训练配方 + 更系统的评测/分析”三者同时到位时，规模收益才会真实兑现，而且某些能力可能是过了阈值才突然出现。
+
+*关键步骤*:
+1. *系统侧兑现算力*: 用 Pathways 做 pipeline-free 的超大规模训练，把 540B 模型扩到 6144 TPU v4（跨两个 Pod），并用 MFU 把训练效率说清楚、可对比。
+2. *训练侧稳住大模型*: 采用一组稳定性/质量关键选择（如 SwiGLU、RoPE、共享输入输出 embedding、训练中不使用 bias、256k SentencePiece 词表、动态 batch size 等），降低大规模训练崩溃风险。
+3. *研究侧看清“规模行为”*: 同配方训练 8B/62B/540B 三个尺度，系统性评测几百个基准，显式报告 BIG-bench 上约 25% 任务的“不连续提升”，并补上偏见/毒性与记忆化分析。
+
+* DELTA
+
+*vs SOTA*:  
+- *能力侧*: PaLM 540B 在“只靠提示词、不做微调”的 few-shot 设置下，在大量语言理解/生成/推理/代码任务上达到当时的 SOTA；并报告在 BIG-bench 上超过平均人类表现，以及多步推理任务上的突破性结果。
+- *系统侧*: 把超大 dense LM 做到跨 Pod 的高效率训练: 540B 训练在 6144 TPU v4 上报告 MFU 46.2%（HFU 57.8%），并给出吞吐与并行策略细节；提出 MFU 作为跨系统更可比的效率指标。
+- *代码侧*: 给出 PaLM-Coder 方向（在额外代码数据上微调）并用 HumanEval/MBPP 等任务评测，展示大模型在代码生成上的可迁移能力与风险点。
+
+*新拼图*:  
+- 证明“把 dense LM 继续往 500B+ 推”仍然能带来新能力，而且不是所有任务都按平滑幂律增长: 有一部分任务呈现阈值式跃迁。
+- 把“训练系统效率”从幕后工程细节，提升为可量化、可复用、可比较的研究对象（MFU），让后续大模型工作能更清楚地回答“我到底把算力浪费在了哪里”。
+
+* CRITIQUE
+
+*隐形假设*:
+- *规模可得性假设*: 结论默认你能获得类似规模的集群与工程团队；否则很多“可复现的关键细节”其实落在不可得的系统能力上。
+- *数据与算力配比假设*: 540B 只训练 780B tokens（1 epoch）在 compute-opt 视角下可能仍偏“undertrained”；如果换成更多 tokens，能力曲线与跃迁位置可能会移动。
+- *评测可信度假设*: few-shot 结果依赖提示词写法与基准质量；即便做了污染检查，也很难彻底排除“近似重复数据”带来的虚高。
+
+*未解之谜*:
+- *跃迁从何而来*: 为什么 BIG-bench 有一部分任务会出现阈值式跃迁？能否预测 threshold(task)，而不是事后观察？
+- *安全与可控性*: 论文分析了偏见/毒性与记忆化，但“如何系统性降低危害且不牺牲能力”仍缺少工程闭环。
+- *代码生成的可靠性*: PaLM-Coder 的示例很强，但正确性、鲁棒性与安全性（漏洞、许可证污染等）如何评估与约束，仍是开放问题。
+
+* LOGIC FLOW
+
+#+begin_example
+[Problem]
+  scale dense LM to 500B+ -> training becomes a system/stability bottleneck
+        |
+        v
+[Idea]
+  "capability gains require system efficiency + stable recipe"
+  and some tasks may show threshold-like emergence
+        |
+        v
+[Method]
+  - Pathways + pipeline-free parallelism on 6144 TPU v4 (track MFU)
+  - stable architecture/training choices (SwiGLU, RoPE, no bias, 256k SP, etc.)
+  - train 8B/62B/540B on 780B tokens (1 epoch) for scaling study
+        |
+        v
+[Evaluation]
+  hundreds of few-shot benchmarks + BIG-bench + reasoning + code
+  + bias/toxicity + memorization analysis
+        |
+        v
+[Findings]
+  - strong SOTA few-shot
+  - discontinuous improvements on a subset of tasks (~25% BIG-bench)
+  - MFU as a clearer metric for training efficiency comparisons
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
+score(task)
+^
+|                           * 540B (PaLM)
+|                        _-'
+|                     _-'
+|                * 62B
+|             _-'
+|        * 8B
+|    _-'
++-------------------------------------------------> log(params N)
+                 ^ threshold(task) -> "discontinuous jump"
+
+System gate:
+tokens/sec ~= (chips * peak_FLOPs * MFU) / flops_token
+#+end_example

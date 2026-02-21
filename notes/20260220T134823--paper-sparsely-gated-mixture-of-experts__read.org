@@ -1,0 +1,140 @@
+#+title:      paper-sparsely-gated-mixture-of-experts
+#+date:       [2026-02-20 Fri 13:48]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260220T134823
+#+source:     https://ar5iv.labs.arxiv.org/html/1701.06538
+#+authors:    Noam Shazeer, Azalia Mirhoseini, Krzysztof Maziarz, Andy Davis, Quoc Le, Geoffrey Hinton, Jeff Dean
+#+venue:      arXiv (ICLR 2017 投稿/审稿)
+
+* PLAIN TALK
+
+这篇论文在解决一个核心矛盾：你想让模型“记住”更多东西就得加参数，但把所有参数每次都算一遍会贵到跑不动。作者把网络的一层拆成成千上万个“专家”小网络，每个输入只激活其中很少几个，用一个小的分配器决定该找谁干活，并用负载均衡避免大家都挤到同几个专家。结果是在语言建模和机器翻译上，用几乎不变的计算量把参数规模做到百亿级（最高约 137B），指标还明显更好。
+
+* LANDSCAPE
+
+#+begin_example
+1991  Jacobs et al.            MoE: many experts + gating
+1994  Jordan & Jacobs          hierarchical MoE (gating tree)
+2001  Tresp                    experts can be GP (general experts)
+2002  Collobert et al.         experts can be SVM
+2009  Shahbaba&Neal / Yao      nonparametric / hierarchical variants
+2013  Davis&Arel / Bengio / Eigen
+      conditional computation: activate only part per example
+2014  Cho & Bengio             conditional / parameterized weight matrices
+2015  Bengio et al.            block-wise dropout + constraints (still tricky)
+2016  Gruslys et al.           checkpointing -> bigger batch for RNN
+--------------------------------------------------------------------------
+turning point: sparsity meets GPU + bandwidth + load balance (hard to run)
+--------------------------------------------------------------------------
+2017  Shazeer et al.            Sparsely-Gated MoE Layer  [*THIS*]
+      limitation: needs big batch + routing/comm; gate can collapse
+#+end_example
+
+* NAPKIN FORMULA
+
+#+begin_example
++----------------------------------------------------+
+| y = sum_{i in top-k} gate_i(x) * Expert_i(x)       |
+| gate(x) = Softmax(KeepTopK(x @ Wg + noise, k))     |
+| Loss = TaskLoss + balance(gate)                    |
++--------------------------------------------    ----+
+#+end_example
+
+意思是：输入 x 先被门控 g(x) 选出 top-k 个专家，只计算这 k 个专家的输出并加权求和得到 y；训练时再加一个 balance(gate)（包含 importance/load 两类平衡项），让每个专家被用得更均匀，避免算力和显存被少数专家拖垮。
+
+其中:
+- x: 上一层给 MoE 的输入表示（例如某个 token 的隐状态向量）
+- Expert_i(x): 第 i 个专家网络对 x 的输出（通常是一个两层前馈网络）
+- gate_i(x): 门控给第 i 个专家的权重（不在 top-k 的专家权重为 0）
+- k: 每个样本实际激活的专家数量（k 很小，用来控算力）
+- Wg: 门控网络的可训练参数矩阵
+- noise: 加到门控打分上的高斯噪声（帮助探索/负载均衡）
+- balance(gate): 额外的平衡损失（用 importance 和 load 两个维度抑制“只用少数专家”）
+
+* PROBLEM
+
+*痛点定义*: 如何把模型容量（参数数）做得极大，同时让每个样本的计算量基本不随容量线性增长，并且在 GPU 集群上还能高效训练。
+
+*前人困境*:
+- 分支/条件执行在 GPU 上不友好，开关太细会把算力浪费在调度上
+- 稀疏激活会把每个专家的有效 batch 变小，矩阵乘法不饱和，效率暴跌
+- 跨设备网络带宽可能成为瓶颈（需要把样本路由到不同专家再收回输出）
+- gate 很容易“偏心”只选少数专家，形成自我强化的失衡
+
+* INSIGHT
+
+*核心直觉*: 不要做“一个巨大的全激活网络”，而是做“很多个中等大小的专家”，每次只算其中 k 个；只要路由和负载能稳住，就能把参数规模扩到天花板而计算量仍可控。
+
+*关键步骤*:
+1. *Noisy Top-K gating*: 给 gate 的打分加高斯噪声，然后只保留 top-k 再 softmax；既省计算，也帮路由更均匀
+2. *负载均衡损失*: 用 importance（门控权重和）和 load（样本数）两类约束，抑制 gate 坍塌到少数专家
+3. *系统实现让它跑得动*: experts 常驻在设备上；把数据并行和模型并行混用，把多个数据并行副本的样本合并成更大的“专家 batch”；对序列模型利用卷积式调用把多个时间步拼大 batch
+
+* DELTA
+
+*vs SOTA*:
+- 1B Word 语言建模：在相近计算预算（约 8M ops/timestep）下，4096 experts 的模型测试困惑度比匹配的强 LSTM 基线低约 24%；4B 参数 MoE 在控制训练轮数时用约 6% 的计算量就能超过当时最佳结果
+- 100B 词级训练集：MoE 参数规模可扩到约 137B；在 65536 experts（约 68B 参数）处困惑度相对匹配基线低约 39%，但再加到 131072 experts 会退化（可能“太稀疏”）
+- 机器翻译：在 WMT14 上 En->Fr 约 40.56 BLEU、En->De 约 26.03 BLEU，相比强 GNMT 基线分别提升约 +1.34/+1.12；多语场景在 11/12 语对上显著优于多语 GNMT
+
+*新拼图*: 给出了一个“可工程落地”的条件计算配方：稀疏门控 +（重要性/负载）均衡损失 + 分布式路由/并行策略，使得“超大参数但近似恒定算力”的模型首次在大规模 NLP 任务上跑通并有效。
+
+* CRITIQUE
+
+*隐形假设*:
+- 需要足够大的总 batch（甚至靠多设备/多时间步拼出来），否则每个专家吃到的样本太少，效率和收敛都会差
+- 依赖高效的跨设备路由/通信；网络带宽不足会吞掉收益，论文用“大 hidden 的专家”提高算/通信比来对冲
+- 负载均衡靠额外损失和噪声“扶正”，其权重/噪声大小是超参，可能对不同任务/规模敏感
+
+*未解之谜*:
+- “专家数越多越好”有边界：论文里 131072 experts 反而变差，怎样自适应地选 k、选专家规模/容量仍不清晰
+- 长尾数据的训练稳定性：多语翻译里 En->Ko 的失败被归因于过采样导致过拟合，如何系统性避免仍是问题
+- 推理部署侧：路由带来的动态计算、缓存/并行策略、以及可解释性/可控性，在论文中讨论不多
+
+* LOGIC FLOW
+
+#+begin_example
+Problem: want more capacity (params) without linear compute
+  |
+  v
+Insight: many experts, use only k per example (k small)
+  |
+  v
+Method:
+  input x
+    |
+    v
+  gate logits z = x @ Wg + noise
+    |
+    v
+  KeepTopK(z, k) -> Softmax -> gate weights
+    |
+    +--> route tokens to selected experts (merge big expert batch)
+    |        |
+    |        v
+    |     Expert_i(x) forward/backward
+    |        |
+    +<-------+
+    |
+    v
+  y = weighted sum (only top-k experts)
+    |
+    v
+  total loss = TaskLoss + balance_importance + balance_load
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
+      (sequence model block)
+
+  ... -> LSTM -> [ MoE layer ] -> LSTM -> ...
+                    |
+                    +-- gate: pick k experts
+                    |
+                    +-- experts bank:
+                        E1  E2  E3  ...  En
+                        |   |   |        |
+                        +---+---+---...--+
+                            weighted merge -> output
+#+end_example

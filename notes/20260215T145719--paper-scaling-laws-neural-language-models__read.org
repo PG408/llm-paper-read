@@ -1,0 +1,138 @@
+#+title:      paper-scaling-laws-neural-language-models
+#+date:       [2026-02-15 Sun 14:57]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260215T145719
+#+source:     https://ar5iv.labs.arxiv.org/html/2001.08361
+#+authors:    Jared Kaplan; Sam McCandlish; Tom Henighan; Tom B. Brown; Benjamin Chess; Rewon Child; Scott Gray; Alec Radford; Jeffrey Wu; Dario Amodei
+#+venue:      arXiv:2001.08361v1 (cs.LG), 2020-01-23
+
+* PLAIN TALK
+
+这篇论文想回答一个很现实的问题：我手里只有固定算力预算时，应该把钱花在“更大模型”还是“更多数据/更久训练”上，才能最划算地把语言模型效果做上去。
+作者发现：在很大范围内，语言模型的测试损失会按非常稳定的“幂律”随模型参数、数据量、训练算力下降；因此可以写出简单公式，直接算出在某个算力预算下最省算力的模型大小、数据量和训练步数，并且结论是“训练超大模型但不要训到收敛”，更省。
+
+* LANDSCAPE
+
+#+begin_example
+Timeline (LM scaling -> "compute budgeting")
+
+2013  word2vec: 词向量大规模训练成为常规
+2014  seq2seq/LSTM: 端到端语言建模与生成加速
+2017  Transformer  <== 关键转折: 训练可并行, 规模上限被抬高
+2018  GPT/ELMo/BERT: "预训练再迁移" 变成主范式
+2019  GPT-2/WebText: 证明"更大+更广数据"带来质变体验
+2020  [*THIS*] Kaplan et al.: 用系统实验给出可预测的幂律 + 给定算力的最优分配
+                  Limitation: 结论主要来自 WebText2 + 特定训练设定; 指数/常数未必跨数据域不变
+#+end_example
+
+* NAPKIN FORMULA
+
+#+begin_example
++---------------------------------------------------------------+
+|  L(N, D) = [ (Nc/N)^(aN/aD) + (Dc/D) ]^aD                     |
+|                                                               |
+|  aN=0.076, Nc=8.8e13 (non-embed params)                       |
+|  aD=0.095, Dc=5.4e13 (tokens)                                 |
+|                                                               |
+|  (Compute budget rule-of-thumb)                               |
+|  N_opt ~ C_min^0.73,  D_opt ~ C_min^0.27,  S_opt ~ C_min^0.03 |
++---------------------------------------------------------------+
+#+end_example
+
+其中 L 是“测试集每个 token 的平均交叉熵损失”（越小越好）；N 是“非 embedding 参数量”；D 是“训练 token 数”；Nc/Dc/aN/aD 是用实验拟合出来的常数与指数。
+上面第一行告诉你：当模型太小或数据太少时，损失会被其中一项“卡住”，两项加在一起就是总的瓶颈。
+下面三条是把固定的最小计算量预算 C_min（在足够小 batch 下的“有效计算量”，单位 PF-days）拆到模型大小 N、数据量 D、训练步数 S 时的最优缩放：算力主要应该花在增大 N 上，D 增长很慢，S 几乎不怎么涨（所以“别训到收敛”）。
+
+* PROBLEM
+
+*痛点定义*: 语言模型训练需要同时扩模型、扩数据、扩算力；但现实里算力/时间/数据常常受限，缺一套“可计算的配方”告诉我该怎么配比才能最划算地提升效果。
+
+*前人困境*: 经验上“更大更好”成立，但缺少跨多个数量级、可外推的定量规律；而且即使承认幂律，也不知道在固定算力预算下 N/D/训练时长应该怎么分配。
+
+* INSIGHT
+
+*核心直觉*: 把语言模型训练当成一个可测量的“物理系统”：用大量实验把损失 L 与规模因子（参数 N、数据 D、计算量 C）之间的关系拟合成简单幂律方程；一旦方程稳定，就可以反过来做“预算优化”。
+
+*关键步骤*:
+1. *去掉形状细节, 只看规模*: 在足够宽的范围内，深/宽/头数等形状差异影响很小，主要由 N、D、C 决定，从而把问题降维成“3 个量的缩放”。
+2. *两类核心拟合*:
+   - 无限数据极限: 数据足够大、训到收敛时，L(N) = (Nc/N)^aN（只看参数瓶颈）。
+   - 有限数据+早停: 大模型在小数据上会过拟合，最优早停后 L(D) = (Dc/D)^aD（只看数据瓶颈）。
+   并用可加形式把两种瓶颈合成 L(N,D)（见餐巾纸公式）。
+3. *把训练过程也拟合成幂律学习曲线*: 用早期曲线外推长训效果，得到 L(N,S) 这类关系；进而在固定 C_min 下联合优化 N、batch、S、D，得到 compute-efficient frontier（最优前沿）。
+
+* DELTA
+
+*vs SOTA*:
+- 不是给“趋势图”，而是给“可用的方程 + 可执行的预算分配规则”，并且跨度达到多数量级（参数/数据/算力都跨多个数量级）。
+- 给出可操作的“过拟合惩罚”尺度：性能随比值 N^0.74 / D 进入可预测的边际收益递减区，从而提供“扩 N 时应同步扩多少 D”的量化经验。
+
+*新拼图*:
+- 把“扩大规模会变好”从口号变成可以做工程决策的算式：给定目标损失或给定算力预算，你能反推需要多少参数、多少 token、训多少步、batch 多大。
+
+* CRITIQUE
+
+*隐形假设*:
+- *幂律在更大尺度仍持续成立*: 论文在当时能覆盖的范围内没看到拐点，但理论上损失不可能无限趋近 0，最终一定会偏离幂律。
+- *指数/常数对数据分布与训练设定足够稳健*: 这里的数值与 WebText2、上下文长度、tokenization、优化细节强相关；换数据域/目标/架构时指数与常数可能会变。
+- *C_min 是“有效计算量”*: 他们用特定的计算量定义（主要按非 embedding 参数与训练 token 计），忽略或简化了工程系统开销；在真实训练系统里，I/O、通信、激活/显存等瓶颈会改变最优点。
+
+*未解之谜*:
+- *从“交叉熵损失”到“下游任务能力”之间的映射*: L 变小一般更好，但对特定能力/安全性/对齐等目标不一定单调或同速。
+- *为什么这些指数是这些数*: 论文提供强经验规律，但缺少解释这些幂指数的机制理论。
+- *推理成本未纳入预算*: 训练最优不等于部署最优；更大 N 可能让推理成本/时延不可接受。
+
+* LOGIC FLOW
+
+#+begin_example
+Goal: pick (N, D, S, batch) under compute budget to minimize test loss
+
+  [Measure] many runs across scales
+        |
+        v
+  Fit bottleneck laws:
+    - parameter-limited: L(N) = (Nc/N)^aN
+    - data-limited (early-stop): L(D) = (Dc/D)^aD
+        |
+        v
+  Combine bottlenecks:
+    L(N, D) = [ (Nc/N)^(aN/aD) + (Dc/D) ]^aD
+        |
+        v
+  Fit learning dynamics:
+    training curve ~ power law in steps (lets extrapolate early training)
+        |
+        v
+  Optimize allocation under C_min:
+    choose N, D, S, batch on the compute-efficient frontier
+        |
+        v
+  Output actionable rules:
+    N grows fast with compute, D grows slowly, stop far before convergence
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
+           (fixed compute budget C_min)
+                     |
+                     v
+        +------------------------------+
+        |  Decide how to spend budget  |
+        +------------------------------+
+          |            |            |
+          v            v            v
+      bigger N      more D       more steps S
+     (model size)   (tokens)    (serial training)
+          |            |            |
+          +------------+------------+
+                       |
+                       v
+            test loss L(N, D, S)
+
+Key message:
+  - put most extra compute into bigger N
+  - increase D slowly (avoid too much reuse)
+  - stop early (don't pay the last-mile convergence tax)
+#+end_example
+

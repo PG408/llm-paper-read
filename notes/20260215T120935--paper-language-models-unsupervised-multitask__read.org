@@ -1,0 +1,110 @@
+#+title:      paper-language-models-unsupervised-multitask
+#+date:       [2026-02-15 Sun 12:09]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260215T120935
+#+source:     https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf
+#+authors:    Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, Ilya Sutskever
+#+venue:      OpenAI Technical Report (2019)
+
+* PLAIN TALK
+
+这篇论文要解决的问题很直接：能不能只靠“读大量互联网文本”，不针对每个任务单独训练，也能做问答、翻译、阅读理解。作者做出的关键结果是：把语言模型做大到 15 亿参数，并用更干净的数据训练后，模型在多个任务上不用微调就能接近当时最强方法。它证明了一个方向：规模化的下一个词预测，本身就会长出跨任务能力。
+
+* LANDSCAPE
+
+#+begin_example
+2013-2016  Word embeddings / RNN LM era
+   |
+2017      Transformer changes scaling path  <=== key turn
+   |
+2018      GPT-1: pretrain + task finetune
+   |
+2018      BERT: strong supervised finetune paradigm  <=== key turn
+   |
+2019      GPT-2: large-scale generative pretraining + zero-shot transfer [*THIS*]
+            limitation: controllability, factuality, safety risk, unstable on strict reasoning
+#+end_example
+
+* NAPKIN FORMULA
+
+#+begin_example
++----------------------------------------------------------+
+|                                                          |
+|   TaskAbility ~= f(ModelSize, DataDiversity, Prompt)     |
+|                                                          |
++----------------------------------------------------------+
+#+end_example
+
+一句话解释：任务能力取决于三个量的耦合增长，其中 ModelSize 是参数规模，DataDiversity 是训练语料覆盖面，Prompt 是把任务写成自然语言上下文的方式。
+
+* PROBLEM
+
+*痛点定义*: 在没有任务标注数据和参数微调的前提下，让同一个模型直接迁移到多种 NLP 任务。
+
+*前人困境*: 之前主流路线依赖“预训练 + 每任务监督微调”，迁移能力强依赖标注集，且任务格式一变就要重新训练头部或全模型。
+
+* INSIGHT
+
+*核心直觉*: 如果模型在足够大的、多样的文本上学会“续写世界”，那问答、摘要、翻译都可以被重写为“给上下文继续写下去”。
+
+*关键步骤*:
+1. 把训练目标保持为单一 next-token prediction，不引入任务特定头，避免多目标干扰。
+2. 构造更高质量语料 WebText（约 800 万文档、约 40GB），提高知识覆盖与分布多样性。
+3. 把模型扩展到 15 亿参数，并在 zero-shot 设置下统一用 prompt 映射任务。
+
+* DELTA
+
+*vs SOTA*: 在不微调条件下，8 个测试任务中 7 个显示出强迁移能力；CoQA 达到 55 F1 并超过 4 个基线中的 3 个；无监督 WMT-14 法英翻译达到 11.5 BLEU。
+
+*新拼图*: 给出了“规模化语言建模可涌现多任务能力”的实证拐点，为后续 In-Context Learning 和大模型统一接口奠定了方法论基础。
+
+* CRITIQUE
+
+*隐形假设*:
+- 互联网文本分布足够覆盖目标任务知识，且噪声不会压垮泛化能力。
+- prompt 写法能稳定表达任务约束，模型能从上下文自动对齐评价指标。
+- 规模收益可持续，且算力和数据成本在工程上可承受。
+
+*未解之谜*:
+- zero-shot 表现对 prompt 形式非常敏感，缺少系统化鲁棒性机制。
+- 生成质量提升不等于事实正确，幻觉与可控性问题尚未解决。
+- 论文未提供安全发布的完整技术闭环，只提出了风险提醒。
+
+* LOGIC FLOW
+
+#+begin_example
++---------+     +----------------------+     +-------------------+
+| Problem | --> | Core insight         | --> | Method            |
+| no task |     | all tasks as text    |     | huge LM + WebText |
+| tuning  |     | continuation         |     | + zero-shot prompt|
++---------+     +----------------------+     +-------------------+
+      \                                              |
+       \                                             v
+        \--------------------------------------> +------------------+
+                                                 | Results          |
+                                                 | 7/8 strong tasks |
+                                                 | CoQA 55 F1       |
+                                                 | Fr-En 11.5 BLEU  |
+                                                 +------------------+
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
+                 Internet Text
+                      |
+                      v
+             +------------------+
+             | Next-token LM    |
+             | (scale up)       |
+             +------------------+
+                      |
+          +-----------+-----------+
+          |           |           |
+          v           v           v
+        QA prompt   MT prompt   RC prompt
+          |           |           |
+          +-----------+-----------+
+                      v
+              Zero-shot outputs
+#+end_example

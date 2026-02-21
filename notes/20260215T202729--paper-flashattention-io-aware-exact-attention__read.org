@@ -1,0 +1,133 @@
+#+title:      paper-flashattention-io-aware-exact-attention
+#+date:       [2026-02-15 Sun 20:27]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260215T202729
+#+source:     https://ar5iv.labs.arxiv.org/html/2205.14135
+#+authors:    Tri Dao, Daniel Y. Fu, Stefano Ermon, Atri Rudra, Christopher Ré
+#+venue:      NeurIPS 2022
+
+* PLAIN TALK
+
+Transformer 的注意力在长文本上又慢又吃显存，根因不是“算不动”，而是算出来的中间大矩阵在显存和芯片片上缓存之间来回搬运，搬运成了瓶颈。FlashAttention 把注意力改成“分块流式计算”，边扫边做 softmax 归一化，直接累加输出，不再把那张巨大的注意力矩阵落到显存里。结果是*不做近似、结果不变*，但显存占用从近似 n*n 变成近似 n，速度也明显提升，让同一张 GPU 能跑更长序列或更大 batch。
+
+* LANDSCAPE
+
+#+begin_example
+2017  Transformer -> softmax attention becomes the default building block
+  |
+2019-2021  Efficient attention wave (reduce n*n FLOPs via approximation)
+  |   SparseTransformer(2019)
+  |   Reformer(2020) Longformer(2020) BigBird(2020)
+  |   Linformer(2020) Performer(2021)
+  |   [TURN] focus on compute complexity, often trades accuracy for speed
+  |
+2022  FlashAttention [*THIS*] <===
+  |   key shift: keep exact softmax attention, but make it IO-aware
+  |   tactic: tiling + on-chip SRAM reuse, avoid materializing attention matrix P
+  |   limitation: still n*n FLOPs; needs custom CUDA / hardware-aware kernels
+#+end_example
+
+* NAPKIN FORMULA
+
+#+begin_example
++-----------------------------------------------------------+
+|                                                           |
+|   t_total = max( t_compute , bytes_moved / BW_HBM )       |
+|                                                           |
++-----------------------------------------------------------+
+#+end_example
+
+含义：总耗时由两者中更慢的那个决定——要么是算术计算时间 *t_compute* ，要么是把数据在 GPU 显存 HBM 里读写搬运的时间（ *bytes_moved* 是总搬运字节数， *BW_HBM* 是显存带宽）。FlashAttention 的核心就是把 *bytes_moved* 砍掉一大截：不再把注意力权重矩阵 P（大小约 n*n）写到 HBM 再读回来，而是在片上 SRAM 里分块算完就直接累加到输出。
+
+* PROBLEM
+
+*痛点定义*: 在不牺牲精度（仍然是 exact softmax attention）的前提下，让注意力在长序列上既快又省显存，能把上下文长度真正拉上去。
+
+*前人困境*: 很多“高效注意力”主要从*减少计算量*入手（稀疏、低秩、核近似），但在 GPU 上标准注意力常常是*带宽/IO 受限*：即使 FLOPs 少了，仍要读写巨量中间结果，墙钟时间不一定降；同时近似方法还会引入精度风险或改模型行为。
+
+* INSIGHT
+
+*核心直觉*: 把注意力当成一次“流式归约”（streaming reduction）而不是“先造出完整的注意力矩阵再做矩阵乘法”。只要能在分块扫描 K,V 的过程中，持续维护每个 query 行的 softmax 归一化所需统计量，就能*精确*得到同样的结果，而无需把权重矩阵 P 存到显存。
+
+*关键步骤*:
+1. *Tiling 到片上 SRAM*: 把 Q、K、V 按块加载到 GPU 的片上 SRAM（小但快），在 SRAM 内完成一块块的 QK^T、softmax、再乘 V，最大化数据复用，最小化 HBM 访问。
+2. *Online softmax 归一化*: 对每个 query 行维护两类小统计量：运行中的最大值 running_max（记作 m）和运行中的指数和 running_sum（记作 l）。每扫过一个 K 块，就用“新块的最大值/和”与旧的 m,l 做一次稳定合并，从而得到与一次性 softmax 完全一致的归一化结果。
+3. *Backward 不存 P，存小量统计量并重算*: 反向传播时不缓存 P（否则又回到 n*n 显存），而是保存每行的 m,l 等少量信息，按同样的分块方式重算需要的中间量，换取少量额外算力，换来巨幅显存节省。
+
+* DELTA
+
+*vs SOTA*:
+- 从复杂度视角：把“HBM 读写”这一项从近似 n*n 级别压到近似 n 级别，并给出 IO complexity 分析与在一定 SRAM 大小范围内的最优性论证。
+- 从工程效果：在 A100 上可做到*最高约 20x* 的显存效率提升；在常见长度（到 2K）上相对标准注意力最高约 3x 更快。
+- 端到端训练/任务收益（论文实验口径）：BERT-large（512）训练约 15% 墙钟加速；GPT-2 attention kernel 可达约 3.5x；Long Range Arena 约 2.4x；能把上下文拉长从而提升质量（如 GPT-2 perplexity 改善约 0.7，长文分类提升约 6.4 点），并首次在 Path-X/Path-256 这类超长依赖任务上做到优于随机猜测。
+
+*新拼图*:
+- 提醒社区“高效”不只看 FLOPs：在现代 GPU 上，IO/带宽常是决定性瓶颈；把算法设计与硬件 memory hierarchy 绑定起来，能在*不改变数学定义*的前提下拿到实打实的墙钟收益。
+- 给出一个可复用的范式：对“softmax + 加权求和”这类结构化计算，用分块 + 在线归一化把大中间张量从显存里抹掉。
+
+* CRITIQUE
+
+*隐形假设*:
+- 场景确实是 IO/带宽受限：如果序列较短或 head dim/实现细节让算术成为瓶颈，收益会显著变小（论文也观察到在某些 block size 后会被算术瓶颈卡住）。
+- 需要硬件与工程配合：依赖定制 CUDA kernel、片上 SRAM 的高效使用；跨 GPU 架构可移植性与维护成本是现实问题。
+
+*未解之谜*:
+- 仍然是 n*n FLOPs：FlashAttention 解决的是“搬运”，不是“本质计算量”，所以超长序列最终还需要稀疏/结构化注意力等手段配合。
+- 如何把“写高层 PyTorch -> 自动编译出 IO-aware kernel”规模化：论文把这作为未来方向，类似 Halide 的编译思路仍需系统化落地。
+- Multi-GPU 场景：单卡内 IO 最优不等于多卡通信最优，长上下文训练在多卡下的 IO/通信联合优化仍是开放问题。
+
+* LOGIC FLOW
+
+#+begin_example
++-----------------------+
+| exact attention is    |
+| slow on long seq      |
+| due to HBM traffic    |
++-----------------------+
+            |
+            v
++-----------------------+
+| idea: do not write    |
+| attention matrix P    |
+| to HBM                |
++-----------------------+
+            |
+            v
++-----------------------+
+| method                |
+| - tile Q K V to SRAM  |
+| - online softmax      |
+| - fuse ops            |
++-----------------------+
+            |
+            v
++-----------------------+
+| outcome               |
+| - much less memory    |
+| - faster wall clock   |
+| - longer context      |
++-----------------------+
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
+Goal: compute O = softmax(Q K^T) V without materializing P = softmax(Q K^T)
+
+            K blocks (stream)
+        +---------+---------+---------+
+        |   K1    |   K2    |   K3    |
+        +---------+---------+---------+
+Q blk i     |         |         |
+ +-----+    v         v         v
+ | Qi  |  [tile in SRAM: Qi x Kj -> scores]
+ +-----+      |
+              v
+      [online softmax stats per row]
+      running_max m , running_sum l
+              |
+              v
+      [accumulate output in SRAM]
+      Oi += softmax_block(scores, m, l) x Vj
+#+end_example
+

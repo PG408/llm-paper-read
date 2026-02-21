@@ -1,0 +1,133 @@
+#+title:      paper-textbooks-all-you-need
+#+date:       [2026-02-21 Sat 16:59]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260221T165951
+#+source:     https://ar5iv.labs.arxiv.org/html/2306.11644
+#+authors:    Suriya Gunasekar, Yi Zhang, Jyoti Aneja, Caio César Teodoro Mendes, Allie Del Giorno, Sivakanth Gopi, Mojan Javaheripi, Piero Kauffmann, Gustavo de Rosa, Olli Saarikivi, Adil Salim, Shital Shah, Harkirat Singh Behl, Xin Wang, Sébastien Bubeck, Ronen Eldan, Adam Tauman Kalai, Yin Tat Lee, Yuanzhi Li
+#+venue:      arXiv:2306.11644
+
+* PLAIN TALK
+
+他们想解决的是: 让 *小模型* 也能写出能跑通测试的 Python 代码, 不靠堆参数和海量“脏”爬虫数据。
+做法很像教人编程: 先喂“教材式”的高质量讲解+示例, 再用大量“练习题”做针对性训练。
+结果是 1.3B 参数的 phi-1 在 HumanEval/MBPP 这类写函数基准上, 能接近甚至超过很多 10B+ 级别开源代码模型。
+
+* LANDSCAPE
+
+#+begin_example
+2017  Transformer(注意力架构) -> 统一了“语言/代码”大模型的基本骨架
+2021  Codex + HumanEval(写函数+单元测试评测) -> 代码生成进入可量化时代
+2022  The Stack/CodeGen/StarCoder(海量爬虫代码) -> 主路线: 扩大模型+扩大 token
+2023  TinyStories(小模型+高质量合成故事) -> *关键转折*: “数据质量”可触发能力
+2023  [*THIS*] Textbooks Are All You Need (phi-1, 1.3B)
+      - 主张: 用更高的“教材/练习题”质量(Q)替代盲目堆数据量(T)
+      - 证据: 7B 教材式 token 预训练 + 180M 练习题微调, HumanEval pass@1 达 50.6
+      - 局限: 主要聚焦 Python 函数题; 合成数据依赖更强老师模型; 生成细节不完全公开
+#+end_example
+
+* NAPKIN FORMULA
+
+#+begin_example
++--------------------------------------+
+|   Score ~= Base(P, T * Q) + Delta(E) |
++--------------------------------------+
+#+end_example
+
+这句“餐巾纸公式”想表达的直觉是: 代码能力不只看模型大小和 token 数, 还看数据是否“可学”。
+- P: 参数量(模型大小)
+- T: 训练 token 数(数据量)
+- Q: 数据质量系数(越像教材/讲清楚/可复现, Q 越大)
+- E: 练习题微调强度(越多成体系练习, Delta 越大)
+
+* PROBLEM
+
+*痛点定义*: 小模型用常规网络爬虫代码训练, 容易学到“噪声/坏习惯”, 写得像, 但跑不通。
+
+*前人困境*: 规模路线(更大模型+更多 token)昂贵; 而“高质量、可教”的代码数据很难自动筛出来, 合成数据又容易被质疑可复现性/污染。
+
+* INSIGHT
+
+*核心直觉*: 让模型像学生一样学编程, 先读“教材”(解释+例子), 再刷“习题”(带明确输入输出的函数题), 质量比数量更关键。
+
+*关键步骤*:
+1. *过滤真数据*: 用 GPT-4 给 10 万段代码标注“教育价值”, 再训练分类器筛 The Stack/StackOverflow, 得到约 6B token 的高质量代码文本。
+2. *合成教材*: 用 GPT-3.5 生成约 1B token 的“Python 教科书式”材料, 覆盖基础语法/算法/库使用等。
+3. *合成练习题并两阶段训练*: 先在 CodeTextbook(过滤真数据+合成教材, 总计约 7B token)预训练得到 phi-1-base, 再用约 180M token 的 CodeExercises(函数练习题)微调成 phi-1。
+
+* DELTA
+
+*vs SOTA*: 在 HumanEval(写函数题集)上, phi-1 的 pass@1(一次生成就通过测试的比例)为 50.6, 明显高于 StarCoder(15.5B, 33.6)与 CodeGen-mono(16.1B, 29.3)。
+
+*新拼图*: 论文把“数据质量”从口号变成可操作流程(标注->分类器过滤->教材/练习合成->两阶段训练), 并展示小模型也能出现更强的“按规格写可运行代码”的行为。
+
+* CRITIQUE
+
+*隐形假设*:
+- “教育价值”能被 GPT-4 标注+分类器近似出来, 且这种偏好对真实开发任务也有效。
+- 合成教材/练习题不会把老师模型的写法与偏见硬灌进去, 也不会隐式覆盖到评测基准(污染风险)。
+- 以 Python 函数为主的训练与评测, 能代表更广泛的软件工程能力(多文件、调试、架构)。
+
+*未解之谜*:
+- Q(数据质量)能否被更严格地量化, 以及在更大模型/更复杂任务上是否同样主导。
+- 合成数据比例、难度分布与“泛化”的关系(刷题会不会变成背题)。
+- 评测仍偏函数题; 真实工程场景(长上下文、工具链、依赖管理)的收益还不清晰。
+
+* LOGIC FLOW
+
+#+begin_example
+问题: 小模型写代码常“像样但跑不通”
+  |
+  |-- 原因 A: 爬虫代码噪声大(缺解释/缺规范/缺可复现测试)
+  |-- 原因 B: 规模路线成本高
+  v
+洞见: 像教人一样教模型(教材 -> 习题)
+  |
+  |-- 教材: 讲清楚 + 给范例
+  |-- 习题: 明确规格 + 单元测试可验
+  v
+方法:
+  |
+  |-- (1) GPT-4 标注教育价值 -> 训练过滤器 -> 得到高质量真数据(~6B token)
+  |-- (2) GPT-3.5 生成教材(~1B token)与练习题(~180M token)
+  |-- (3) 预训练(CodeTextbook ~7B) -> 微调(CodeExercises ~180M) -> phi-1
+  v
+结果:
+  |
+  |-- HumanEval pass@1: 50.6 (phi-1) vs 29.4 (phi-1-base)
+  |-- 新 50 题集(GPT-4 评分): phi-1 73.0, 明显高于多款开源模型
+  |-- 训练集去相似后仍保持较高分数, 说明性能不只靠污染
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
+                     +---------------------+
+The Stack/StackOv ->| GPT-4 标注(教育价值) |---+
+                     +---------------------+   |
+                                               v
+                                         +-----------+
+                                         | 过滤器    |
+                                         | (分类器)  |
+                                         +-----------+
+                                               |
+                                               v
+                                      +-----------------+
+                                      | 过滤真数据(~6B) |
+                                      +-----------------+
+
+ +-------------------+                          +-------------------+
+ | GPT-3.5 生成教材  |-----> 合成教材(~1B) ---->| CodeTextbook(~7B) |
+ +-------------------+                          +-------------------+
+ +-------------------+                                      |
+ | GPT-3.5 生成练习题|-----> 练习题(~180M)                  v
+ +-------------------+                               +-------------+
+                                                     | 预训练      |
+                                                     | phi-1-base  |
+                                                     +-------------+
+                                                           |
+                                                           v
+                                                     +-------------+
+                                                     | 微调(练习)  |
+                                                     | phi-1       |
+                                                     +-------------+
+#+end_example

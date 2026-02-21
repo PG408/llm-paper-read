@@ -1,0 +1,137 @@
+#+title:      paper-glam-efficient-scaling-moe
+#+date:       [2026-02-21 Sat 19:45]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260221T194542
+#+source:     https://ar5iv.labs.arxiv.org/html/2112.06905
+#+authors:    Nan Du et al.
+#+venue:      ICML 2022; arXiv:2112.06905 (2021)
+
+* PLAIN TALK
+
+这篇论文想解决一个很现实的问题: 语言模型越做越强, 但训练和推理的算力/能耗增长太快, 很快就变成“烧不起”的工程项目。
+作者用一种“很多专家轮流上场”的模型结构: 每个词只叫来其中 2 个专家干活, 于是总参数能堆到 1.2T, 但每次预测只激活约 96.6B 参数参与计算。
+结果是: 在 29 个公开任务的 zero/one/few-shot 上平均优于 GPT-3, 同时训练能耗约 1/3, 推理 FLOPs/token 约一半。
+
+* LANDSCAPE
+
+#+begin_example
+2017  Transformer (self-attention) <==== [TURN]
+  |   - scaling becomes the main driver for LM capability
+  v
+2017  Sparsely-Gated MoE (conditional compute) <==== [TURN]
+  |   - idea: route each token to a few experts, not the whole network
+  v
+2020  Scaling laws + GPT-3 (175B) <==== [TURN]
+  |   - few-shot emerges, but dense training/inference cost explodes
+  v
+2021  GShard / Switch Transformer (MoE at scale) <== [TURN]
+  |   - stabilize training + make routing/parallelism practical
+  v
+2021  GLaM (1.2T total, top-2 routing)  <==== [THIS]
+      - claim: decoder-only MoE can beat dense/GPT-3 under less FLOPs
+      - limit: huge total params => more devices + routing/comm overhead
+                serving cost can be high when traffic is low
+#+end_example
+
+* NAPKIN FORMULA
+
+#+begin_example
++-------------------------------------------------------------+
+|                                                             |
+|  Total params:        n_params     = n_shared + E*n_expert  |
+|  Activated per token: n_act_params = n_shared + k*n_expert  |
+|                                                             |
+|  where:                                                     |
+|   - E: number of experts in each MoE layer                  |
+|   - k: top-k experts used per token (GLaM uses k=2)         |
+|   - n_shared: shared parts (attention, embeddings, etc.)    |
+|   - n_expert: params of ONE expert FFN                      |
+|                                                             |
+|  Key: k << E, so compute ~ n_act_params while capacity ~    |
+|       n_params.                                             |
+|                                                             |
++-------------------------------------------------------------+
+#+end_example
+
+一句话解释公式含义: 通过把“总容量”堆在很多专家里 (E 很大), 但每个 token 只激活很少的专家 (k 很小), 就能让“每次预测的计算量”不随总参数线性爆炸。
+
+* PROBLEM
+
+*痛点定义*: 如何把语言模型的能力继续往上推, 但不让训练/推理成本和能耗按“稠密参数量”线性失控。
+
+*前人困境*: 稠密模型每个 token 都要经过全部层的全部参数, 因而 FLOPs/token 随参数量增长; 规模继续上去会迅速撞到算力、能耗、时间和预算上限。
+
+* INSIGHT
+
+*核心直觉*: 用 MoE (Mixture-of-Experts, “专家混合”) 做条件计算: 给每个 token 一个路由器, 只把它发给最相关的少数专家, 既保留超大容量, 又把每步计算限制在“激活子网”的规模。
+
+*关键步骤*:
+1. 架构: decoder-only Transformer, 把“每隔一层”的 FFN 换成 MoE-FFN; gating 用 softmax 给 64 个专家打分, 每个 token 选 top-2 专家, 对两路输出加权求和再回到主干网络。
+2. 稳定训练: 加 MoE 的负载均衡辅助损失 (鼓励 token 更均匀地分配到各专家), 避免专家被闲置或塌缩成少数专家独占。
+3. 数据与系统: 构建 1.6T token 的高质量混合语料 (用质量分类器过滤网页并用采样策略保留部分低质网页以减偏); 用 2D sharding/GSPMD 做大规模并行, 让 1.2T 参数可在 TPU-v4 集群上训练与推理。
+
+* DELTA
+
+*vs SOTA*: 最大的 GLaM (1.2T total, 64 experts/layer) 平均在 21 个 NLU + 8 个 NLG 任务的 zero/one/few-shot 上优于 GPT-3 (175B), 同时推理 FLOPs/token 约从 350G 降到 180G, 训练能耗约从 1287 MWh 降到 456 MWh。
+
+*新拼图*:
+- 经验结论被“钉死”: 在 in-context few-shot 设定下, decoder-only MoE 不仅省算, 还能在更大规模时系统性超过同等有效 FLOPs 的稠密模型。
+- “数据质量”不是小打小闹: 用过滤后的 143B 网页 token 训练, 反而显著优于用约 7T 未过滤网页 token 替换后的版本 (尤其对生成类 NLG 更敏感)。
+- 社会维度的一点信号: 报告了 WinoGender 上“刻板/反刻板”差距收敛的现象, 暗示更大容量的稀疏模型可能更少依赖表面统计相关性 (但不等于偏见消失)。
+
+* CRITIQUE
+
+*隐形假设*:
+- 路由可学且可控: 默认 gating 在大规模训练中不会塌缩, 且负载均衡损失足以让专家都“被用起来”, 否则总参数只是账面容量。
+- 系统开销可压住: 默认稀疏路由带来的 all-to-all 通信、专家并行、内存驻留等开销不把省下的 FLOPs 全吃掉; 结论强依赖 TPU-v4 + GSPMD 这类软硬件栈。
+- 评测代表性: few-shot 的提示格式/采样策略对结果敏感, 论文采用的 29 个任务与模板未必覆盖真实产品分布。
+
+*未解之谜*:
+- Serving 的“总参数税”: 虽然每 token 只算一小部分专家, 但线上要为巨大的总参数付出设备/内存与调度成本, 低流量场景可能更贵。
+- 偏见与毒性仍在: 文中做了关联偏见与毒性退化评估, 但并未给出结构性解决方案; “某个基准变好”不等于系统性安全。
+
+* LOGIC FLOW
+
+#+begin_example
+Problem: dense scaling => too expensive (train energy + FLOPs/token)
+  |
+  v
+Insight: conditional compute via MoE (route each token)
+  |   - increase total capacity with many experts
+  |   - keep per-token compute small with top-k routing
+  v
+Method: decoder-only Transformer + MoE-FFN every other layer
+  |   - top-2 gating + load-balancing aux loss
+  |   - high-quality 1.6T token mixture + large-scale sharding
+  v
+Result: better zero/one/few-shot on 29 tasks with lower cost
+  |   - ~1/3 training energy vs GPT-3
+  |   - ~1/2 FLOPs/token at inference
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
+                token x
+                  |
+                  v
+          +----------------+
+          |  gating router |
+          +----------------+
+            |          |
+            | top-2    | top-2
+            v          v
+        +-------+  +-------+        (E experts total)
+        | expert|  | expert|   ...  only 2 active per token
+        +-------+  +-------+
+            \        /
+             \      /
+              v    v
+          +----------------+
+          | weighted merge |
+          +----------------+
+                  |
+                  v
+        back to Transformer backbone
+#+end_example
+

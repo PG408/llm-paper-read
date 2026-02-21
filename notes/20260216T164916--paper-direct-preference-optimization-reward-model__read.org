@@ -1,0 +1,124 @@
+#+title:      paper-direct-preference-optimization-reward-model
+#+date:       [2026-02-16 Mon 16:49]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260216T164916
+#+source:     https://arxiv.org/html/2305.18290v3
+#+authors:    Rafael Rafailov; Archit Sharma; Eric Mitchell; Stefano Ermon; Christopher D. Manning; Chelsea Finn
+#+venue:      arXiv preprint (2023)
+
+* PLAIN TALK
+
+传统 RLHF（先训“打分器/奖励模型”，再用强化学习让模型刷高分）又贵又容易不稳定。本文发现：只要你有一堆“回答 A 比回答 B 更好”的偏好对，就能用一个类似二分类的损失直接把语言模型往“更受偏好”的方向推，不需要显式奖励模型也不需要 PPO 这类强化学习。实验上，这个方法（DPO）在摘要、单轮对话、情感控制等任务上，效果与 PPO-RLHF 相当甚至更好，但训练更简单、更稳、更省算力。
+
+* LANDSCAPE
+
+#+begin_example
+1952  Bradley-Terry  (用两两比较建模“更喜欢谁”)
+  |
+2017  RL from human preferences  (从比较数据学 reward)  *TURN*
+  |
+2020  Summarization w/ human feedback  RM + PPO -> RLHF 配方成型
+  |
+2022  InstructGPT / RLHF at scale  SFT -> RM -> PPO (+ KL 约束)
+  |
+2022  RLAIF / synthetic preferences  用更便宜的 AI 标注扩数据
+  |
+2023  DPO  把“偏好 + KL 约束”的 RLHF 目标改写成监督学习  [*THIS*]
+      key turn: 最优策略有闭式解 => 反推 reward = beta * log(pi/pi_ref)
+      limit: 依赖离线偏好对 + 参考模型; beta 权衡要选; 评测受 judge/prompt 影响
+#+end_example
+
+* NAPKIN FORMULA
+
+#+begin_example
++-----------------------------------------------------------------------+
+| loss(x,y_w,y_l) = -log sigmoid( beta * ( gap_theta - gap_ref ) )      |
+| gap_theta = log pi_theta(y_w|x) - log pi_theta(y_l|x)                 |
+| gap_ref   = log pi_ref(y_w|x)   - log pi_ref(y_l|x)                   |
++-----------------------------------------------------------------------+
+#+end_example
+
+x 是 prompt；y_w / y_l 分别是“人更喜欢/更不喜欢”的回答。pi_theta 是当前要训练的语言模型（输出每个回答的概率），pi_ref 是参考模型（通常是 SFT 模型，用来当“锚点”）；beta 控制“追偏好”与“别偏离参考模型太远”的力度（可理解为 KL 约束的强度参数）。这个 loss 做的事很直白：让模型相对参考模型“更倾向 y_w 而不是 y_l”。
+
+* PROBLEM
+
+*痛点定义*: 用离线偏好数据把语言模型对齐到“人更喜欢的回答”，同时把训练成本、复杂度和不稳定性降下来。
+
+*前人困境*:
+- *两阶段管线太重*  先训练 reward model，再训练 policy（还常常要 value/critic），工程与算力都更贵
+- *采样在环*  PPO/RL 需要不断从当前 policy 采样再更新，吞吐低、成本高
+- *不稳定与难调参*  actor-critic + KL + reward 归一化/基线等细节容易导致训练抖动
+- *偏好只给“相对信息”*  偏好主要约束 reward 差值，绝对尺度/归一化处理会影响 RL 训练
+
+* INSIGHT
+
+*核心直觉*: KL 正则化的“刷 reward”问题有闭式最优策略：最优 pi*(y|x) 形如 pi_ref(y|x) 乘上 exp(reward/beta) 再归一化。反过来，给定任意一个策略 pi，都能定义一个与之等价的 reward：reward_pi(x,y) = beta * log( pi(y|x) / pi_ref(y|x) )（再加一个只依赖 x 的常数也不改变偏好与最优策略）。所以可以直接用偏好对来训练 pi_theta，本质上是在训练一个“隐式 reward”，但优化形式只是监督学习。
+
+*关键步骤*:
+1. *固定参考模型 pi_ref*  通常取 SFT；既是 KL 锚点，也和偏好数据的生成分布一致
+2. *把每条偏好对变成一个 logit*  用“模型的对数概率差值”减去“参考的对数概率差值”，再乘 beta
+3. *用二分类交叉熵更新模型*  只做梯度下降，不需要 RL rollout / reward model / value baseline
+
+* DELTA
+
+*vs SOTA*:
+- *把 RLHF 变成纯监督目标*  只训练一个 pi_theta，省掉 reward model + PPO
+- *训练更稳、实现更轻*  不需要在训练环里采样；主要超参聚焦在 beta
+- *摘要任务实证*  TL;DR 上用 GPT-4 做评测时，DPO 在温度 0.0 的 win rate 约 61%，高于 PPO 的约 57%；人评里 DPO(温度 0.25) 相比 PPO(温度 0.0) 约 58% 更受偏好
+- *对采样温度更鲁棒*  PPO 在高温采样时性能可能退化，而 DPO 退化更小
+- *分布外泛化证据*  TL;DR 上训练的策略在 CNN/DailyMail（新闻）分布上，DPO 仍显著优于 PPO（同样用 GPT-4 win rate）
+
+*新拼图*:
+- 给出一个“从偏好到策略”的闭环：*偏好对 + 参考模型 + 一个分类 loss* 就能近似解 RLHF 目标
+- 把 reward 的“不可辨识性”讲清楚：reward 只在“加一个 f(x)”的等价类里有意义
+- 给了一个可操作的解释：*语言模型本身就隐含着一个 reward*（相对参考模型的 log-ratio）
+
+* CRITIQUE
+
+*隐形假设*:
+- *偏好可用 BT/PL 建模*  假设 P(y_w 更好|x) = sigmoid(reward_w - reward_l)；若人类偏好非传递/多目标混合，这个模型会失真
+- *参考模型足够好*  pi_ref 既是锚点也是数据来源；若 pi_ref 太差或覆盖不足，DPO 的提升空间会被“锚”住
+- *beta 用一个全局常数就够*  现实里不同领域/不同 prompt 的“该偏离多少”可能不同，单一 beta 不一定合适
+- *离线数据足够代表线上*  偏好数据分布漂移、偏好噪声、或被模型学到数据捷径时，效果会打折
+
+*未解之谜*:
+- *过优化/刷偏好*  直接优化偏好是否更容易学到评测器或数据集的“捷径”（reward hacking 的另一种形态）
+- *多轮与长程任务*  本文聚焦单轮/摘要；多轮对话、工具调用下的偏好如何定义与优化？
+- *评测代理问题*  GPT-4 judge 受 prompt 影响，作者也展示了不同 prompt 会改变结论；需要更稳健的评测协议
+- *更大规模是否仍成立*  文中实验到约 6B；更大模型、更复杂偏好数据下的稳定性与收益仍需验证
+
+* LOGIC FLOW
+
+#+begin_example
+offline preference pairs D: (x, y_w, y_l)
+  |
+choose reference model pi_ref (usually SFT)
+  |
+score s = beta * [ (log pi_theta(y_w|x) - log pi_theta(y_l|x))
+                 - (log pi_ref  (y_w|x) - log pi_ref  (y_l|x)) ]
+  |
+loss = -log sigmoid(s)
+  |
+SGD update pi_theta (supervised; no RL sampling loop)
+  |
+DPO-aligned policy
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
+                 human preference
+prompt x  ------------------------------>  y_w beats y_l
+   |                                         |
+   |                                         v
+   |      +------------------------------+  score = beta * (gap_theta - gap_ref)
+   |      | compare log-prob gaps        |  loss  = -log sigmoid(score)
+   |      | (model vs reference)         |
+   |      +------------------------------+
+   |                 |
+   v                 v
+pi_ref (SFT anchor)   pi_theta (train -> aligned)
+
+secret reward view:
+reward_theta(x,y) = beta * log( pi_theta(y|x) / pi_ref(y|x) )
+#+end_example

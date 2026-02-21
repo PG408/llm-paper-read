@@ -1,0 +1,144 @@
+#+title:      paper-qwen3-technical-report
+#+date:       [2026-02-18 Wed 19:06]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260218T190603
+#+source:     https://arxiv.org/abs/2505.09388
+#+authors:    An Yang 等（Qwen Team）
+#+venue:      arXiv 2025 (Technical Report)
+
+* PLAIN TALK
+
+很多大模型要么“回答快但不爱推理”，要么“推理强但延迟高”，真实产品里常常得准备两套模型再做路由。Qwen3 的关键想法是：同一个开源模型里同时学会“写出推理过程(/think)”和“直接给结论(/no_think)”，你只要在提示词/模板里加一个开关就能切换。更进一步，它提供“思考预算”(thinking budget) 让你限制它最多想多少步（以 token 计；token 可以粗略理解成模型内部计数的“字块”），并用“大模型当老师教小模型”的蒸馏方式把这套能力更省钱地复制到多个尺寸上。
+
+* LANDSCAPE
+
+#+begin_example
+2017  Transformer becomes the default backbone
+  |
+2020  Scaling (more data/params) -> strong general LLMs
+  |
+2022  Instruction tuning + RLHF -> fast chat-optimized assistants
+  |
+2021-2023  [TURN] MoE scaling (many experts, few activated)
+  |         -> cheaper inference for "big" models
+  |
+2024-2025  [TURN] Reasoning models via long-CoT + RL
+  |         -> better hard problems, but higher latency/cost
+  |
+2024  Qwen2.5 line + teacher specialists (VL OCR, Math, Coder, QwQ)
+  |
+2025  Qwen3: unify think/no_think + thinking budget [*THIS*]
+  |         -> one model, controllable cost vs quality
+  |         -> limitation: control relies on templates + hard stop
+#+end_example
+
+注：RLHF = 用人类偏好做强化学习对齐；MoE = 混合专家（很多“专家子网络”，每次只激活少数几个，所以更省算）；CoT = 把中间推理步骤写出来的“长推理答案”。
+
+* NAPKIN FORMULA
+
+#+begin_example
++-----------------------------------------------------------+
+|                                                           |
+|   (think, answer) = Qwen3(prompt, mode);  len(think) <= B |
+|                                                           |
++-----------------------------------------------------------+
+#+end_example
+
+含义：*prompt* 是你的输入；*mode* 决定“输出推理(/think)”还是“直接回答(/no_think)”；*think* 是模型写出的中间推理文本；*B* 是思考预算（允许 *think* 最多生成 B 个 token，超过就强制停止思考，再继续生成最终回答）。
+
+* PROBLEM
+
+*痛点定义*: 让一个开源模型在真实工程里同时满足“该快就快(不想)”和“该深就深(会想)”，并且能在推理时可控地在 *延迟/成本* 与 *效果* 间切换。
+
+*前人困境*:  
+- 往往需要分别部署 chat 模型（偏对话、少推理）与 reasoning 模型（偏推理、延迟高）：路由、成本、体验都复杂。  
+- 不训练“可控思考格式”，就很难做到稳定的开关与预算控制；强行截断思考也容易让回答崩。  
+- 多阶段 SFT（有监督微调）/RL（强化学习）如果对每个小模型都重跑，训练成本会爆炸。
+
+* INSIGHT
+
+*核心直觉*: 把“思考”当成 *可控的输出通道*（一个固定格式的 <think>...</think> 块），用模板/标志位让模型学会在“有思考/无思考/半思考”三种形态下都能正常收尾；这样预算控制可以通过“截断 think + 注入停思考指令”自然落地。
+
+*关键步骤*:
+1. *先把底座做厚*: 36T token、119 种语言/方言的三阶段预训练（通用 -> 强推理/代码 -> 长上下文），并做实例级标注与消融实验，把“数据配比”细化到样本级。
+2. *把“会想”练出来*: long-CoT cold start（只选“有标准答案/可运行测试”的可验证难题，并排除“不写推理也能蒙对”的题），再用 GRPO（Group Relative Policy Optimization，一种基于“同题多次采样、相对比较”来更新模型的推理强化学习方法）训练（3,995 个 query-verifier 对：题目 + 自动判对错的验证器；配大 batch=一次更新用更多样本、多 rollout=同题采样多条解、off-policy=复用旧样本提效，并用熵控制=约束随机性来稳训练）。
+3. *把“会想/不想”焊在一起*: 持续 SFT 融合两种数据，并用 chat template 引入 /think 与 /no_think；对 /no_think 保留空的 think 块以保持格式一致；预算控制通过到阈值就“强停 think + 插入停思考句 + 关闭 </think>”来实现（文中强调该能力在融合后自然涌现）。
+
+* DELTA
+
+*vs SOTA*:  
+- *工程形态*: 一个模型同时支持 /think 与 /no_think，并可用 thinking budget 控制推理开销，减少“多模型切换”的系统复杂度。  
+- *模型形态*: 既有 dense（0.6B/1.7B/4B/8B/14B/32B），也有 MoE（30B-A3B、235B-A22B；MoE 为 128 个专家、每个 token 激活 8 个专家；235B 总参但仅 22B 激活），并支持长上下文（dense 32K，MoE 128K）。  
+- *多语种与数据*: 预训练覆盖 119 种语言/方言（从 Qwen2.5 的 29 扩到 119），总计 36T token，并通过 OCR PDF + 合成数据扩容。  
+- *训练效率*: 对轻量模型直接蒸馏 teacher 的输出 logits（logits=模型在 softmax 之前的“原始打分”），可用约 1/10 GPU hours 获得更好的 Pass@1/Pass@64（Pass@1=只试一次就做对；Pass@64=最多试 64 次至少对一次），并保留对推理过程的细粒度控制。  
+- *硬指标示例*: 推理 RL 阶段中，Qwen3-235B-A22B 的 AIME'24 从 70.1 提升到 85.1（170 个 RL step）；报告也给出该系列在代码/数学/agent 等多类基准上的 SOTA 级结果。  
+- *可复现性*: 报告声明模型以 Apache 2.0 许可证公开可用。  
+
+*新拼图*:  
+- “模式融合”(Thinking Mode Fusion) 不是把“推理”当成另一个模型，而是用 *统一输出格式 + 数据融合 + 模板控制* 让同一模型覆盖三种行为（想/不想/半想），从而让 *预算控制* 成为可实现的产品旋钮。  
+
+* CRITIQUE
+
+*隐形假设*:
+- 推理栈必须严格遵守模板：/think、/no_think、空 think 块、以及强停注入句，都要求调用侧格式非常一致；一旦模板漂移，控制就会失效或变得不可预测。
+- thinking budget 的实现本质是“硬截断 + 口头提醒”：在复杂任务上可能造成“半截思考”与最终回答不一致，甚至引入新的幻觉模式（模型被迫基于不完整推理收尾）。
+- GRPO/可验证任务带来的推理提升，隐含了“有可靠 verifier/可自动判分”的数据形态；对开放式写作、交互式工具使用等场景的外推未必等价。
+
+*未解之谜*:
+- 预算 *B* 怎么自动选？靠用户手调很难规模化；靠路由器/启发式又会引入新系统复杂度。
+- “不输出思考”是否等价于“没有内部思考”？空 think 块更像 *输出约束*，对安全/隐私/可解释性的边界仍需要更严格的定义与验证。
+- 融合后“半思考可用”的涌现边界是什么：哪些任务可被安全截断，哪些会直接崩？
+
+* LOGIC FLOW
+
+#+begin_example
+[Need one open model: fast chat + deep reasoning]
+                 |
+                 v
+[Make "thinking" a controllable output block]
+                 |
+                 v
+[Pretrain: 36T tokens, 119 langs, long context]
+                 |
+                 v
+[Post-train reasoning]
+  -> long-CoT cold start (verifiable hard queries)
+  -> reasoning RL via GRPO (query-verifier pairs)
+                 |
+                 v
+[Fuse modes]
+  -> SFT mix (thinking + non-thinking)
+  -> template flags: /think vs /no_think (+ empty think block)
+  -> budget: truncate think at B, inject stop-think line, close </think>
+                 |
+                 v
+[Result: mode switch + budget knob in one model]
+                 |
+                 v
+[Scale down cheaply: strong-to-weak logits distillation]
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
+Case A: thinking on
+  user:  "... /think"
+  asst:
+    <think>
+    ... reasoning tokens ...
+    </think>
+    ... final answer ...
+
+Case B: thinking off
+  user:  "... /no_think"
+  asst:
+    <think></think>
+    ... final answer ...
+
+Case C: budget control (B tokens)
+  asst:
+    <think>
+    ... up to B tokens ...
+    [STOP] "Considering the limited time ... </think>"
+    ... final answer based on partial think ...
+#+end_example

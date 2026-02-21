@@ -1,0 +1,141 @@
+#+title:      paper-attention-is-all-you-need
+#+date:       [2026-02-14 Sat 13:31]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260214T133121
+#+source:     https://arxiv.org/html/1706.03762v7#S5
+#+authors:    Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N. Gomez, Lukasz Kaiser, Illia Polosukhin
+#+venue:      NeurIPS 2017
+
+* PLAIN TALK
+
+这篇论文在解决一个很现实的问题：机器翻译模型以前主要靠循环网络，训练慢、并行差、远距离信息传递也费劲。作者把“按顺序读句子”的做法几乎全拿掉，改成让每个词一次性看全句里所有词，再按相关性聚合信息。结果是翻译精度更高（WMT14 英德 28.4 BLEU，英法 41.8 BLEU），训练还明显更快。
+
+* LANDSCAPE
+
+#+begin_example
+1997  LSTM opens long-sequence modeling
+  |
+2014  Seq2Seq with RNN encoder-decoder (Sutskever et al.)
+  |
+2015  [TURN] Add attention to NMT (Bahdanau et al.)
+  |        -> alignment gets better, but RNN still sequential
+2016  GNMT + deep/large RNN systems (Wu et al.)
+  |        -> quality up, training/inference still heavy
+2016  [TURN] Convolutional sequence models (ByteNet, ConvS2S line)
+  |        -> more parallel, but long dependencies need deep stacks
+2017  Transformer (self-attention only) [*THIS*]
+  |        -> global token-to-token path becomes short and parallel
+  |        -> limitation: self-attention cost grows with sequence length (about n*n)
+  |
+Post-2017  Large-scale transformer era
+#+end_example
+
+* NAPKIN FORMULA
+
+#+begin_example
++----------------------------------------------------------+
+|                                                          |
+|   state_i_new = sum_j weight(i,j) * value_j              |
+|                                                          |
++----------------------------------------------------------+
+#+end_example
+
+含义：第 i 个词的新表示，是把所有位置 j 的信息 value_j 按相关性权重 weight(i,j) 做加权求和；weight 越大，说明 j 对 i 越关键。
+
+* PROBLEM
+
+*痛点定义*: 在序列到序列任务里，如何同时做到高精度、可并行训练、并且能稳定建模长距离依赖。
+
+*前人困境*: RNN 的时间步依赖让训练天然串行，最长依赖路径随序列变长；CNN 虽可并行，但跨远距离信息需要更多层或更大卷积核。
+
+* INSIGHT
+
+*核心直觉*: 不再让信息“沿时间一步步传”，而是让每个词直接和全句所有词建立连接，再自动学习谁该被关注。
+
+*关键步骤*:
+1. 用“缩放点积注意力”算相关性分数，并用缩放因子控制分数过大导致的 softmax 饱和问题。
+2. 用“多头自注意力”并行学习多种关系，再加位置编码补回词序信息，并在解码端用 mask 防止看到未来词。
+
+* DELTA
+
+*vs SOTA*:  
+- WMT14 English-to-German: 28.4 BLEU，超过当时公开最佳集成系统约 2 BLEU（论文表中最佳约 26.3）。  
+- WMT14 English-to-French: 41.8 BLEU，超过当时单模型/集成基线。  
+- 训练效率：大模型在 8 张 P100 上约 3.5 天；基础模型训练成本显著更低。
+
+*新拼图*:  
+- 证明“仅靠注意力（无循环、无卷积）”可以成为通用序列建模主干。  
+- 给出复杂度视角：自注意力在每层并行步数和依赖路径上更短，解释了它为何在实践中扩展更快。
+
+* CRITIQUE
+
+*隐形假设*:
+- 默认句长不极端长；因为全局自注意力的计算和显存大致随 n*n 增长，超长序列时代价会迅速放大。
+- 默认有较强并行硬件与工程栈支持；该优势在低资源设备上会被削弱。
+- 默认位置编码足以恢复顺序结构；但这种“外加顺序”不一定总能替代显式时序归纳偏置。
+
+*未解之谜*:
+- 如何在保持精度前提下把全局注意力降到近线性复杂度（后续大量工作才继续补齐）。
+- 推理阶段仍是自回归逐步生成，端到端低延迟部署问题没有在本文彻底解决。
+- 注意力权重是否等价于可解释因果证据，本文没有给出严格论证。
+
+* LOGIC FLOW
+
+#+begin_example
+[RNN/CNN bottleneck]
+        |
+        v
+[Need parallel + long-range modeling]
+        |
+        v
+[Idea: every token attends to every token]
+        |
+        v
+[Mechanism]
+  -> scaled dot-product attention
+  -> multi-head attention
+  -> positional encoding + masked decoder
+        |
+        v
+[Stack encoder/decoder blocks + train on WMT14]
+        |
+        v
+[Result: better BLEU + lower training cost]
+        |
+        v
+[Boundary: n*n attention cost on long sequences]
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
+tokens_in
+  |
+  v
++-------------------+
+| linear to Q K V   |
++-------------------+
+  |
+  v
++-------------------+      +-------------------+
+| all-pairs scores  | ---> | row softmax       |
+| (Q x K^T scaled)  |      | -> attention map  |
++-------------------+      +-------------------+
+               \              /
+                \            /
+                 v          v
+              +-------------------+
+              | weighted sum on V |
+              +-------------------+
+                       |
+                       v
+              +-------------------+
+              | multi-head concat |
+              +-------------------+
+                       |
+                       v
+                 encoder/decoder
+                       |
+                       v
+                    tokens_out
+#+end_example

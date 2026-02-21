@@ -1,0 +1,122 @@
+#+title:      paper-retrieval-augmented-generation-knowledge-intensive
+#+date:       [2026-02-15 Sun 20:46]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260215T204618
+#+source:     https://ar5iv.labs.arxiv.org/html/2005.11401
+#+authors:    Patrick Lewis, Ethan Perez, Aleksandra Piktus, Fabio Petroni, Vladimir Karpukhin, Naman Goyal, Heinrich Küttler, Mike Lewis, Wen-tau Yih, Tim Rocktäschel, Sebastian Riedel, Douwe Kiela
+#+venue:      arXiv:2005.11401 (2020)
+
+* PLAIN TALK
+
+这篇论文想解决：让模型回答需要事实知识的问题时，别只靠“背书”，而是像人一样先去查资料再作答。作者把“检索维基百科段落”和“用生成模型写答案”合成一个端到端系统，并在训练时让模型学会给不同证据加权。结果是在多项知识密集任务上更准，而且可以通过替换外部文档库来更新知识。
+
+* LANDSCAPE
+
+#+begin_example
+2017  Retrieve+Read (DrQA): retrieve passages, extract spans
+  |
+2018  Closed-book pretraining starts to look strong (BERT/GPT): knowledge in weights
+  |
+2019  Pretrained seq2seq generators (BART/T5): fluent generation, weak provenance
+  |
+2020  Dense retrievers (ORQA / REALM / DPR) <==  turning point
+  |
+2020  [*THIS*] RAG: retrieve + generate + marginalize docs
+  |   limitation: topK approximation; depends on index coverage + retriever quality;
+  |               adds latency/infra (ANN search, caching, index refresh)
+  |
+2021+  Stronger fusion + retrieval scaling (e.g., FiD / later RAG variants)
+#+end_example
+
+* NAPKIN FORMULA
+
+#+begin_example
++------------------------------------------------------------------+
+|  p(y | x) ~=  sum_{z in topK(x)}  p(z | x) * p(y | x, z)         |
++------------------------------------------------------------------+
+#+end_example
+
+这里 x 是输入（问题/上下文），y 是要生成的输出（答案/文本），z 是检索到的一段证据（段落/文档片段）。
+p(z|x) 来自检索器（给候选段落一个相关性权重），p(y|x,z) 来自生成器（在给定证据后写出 y）。
+训练/推理时只对 topK(x) 个段落求和，是近似；K 越大越准但越慢。
+
+* PROBLEM
+
+*痛点定义*: 纯生成模型把知识“写进参数”，难以给出可核验的证据、难以更新知识；在需要精确事实的任务里容易“说得像但不一定对”。
+
+*前人困境*:
+- *参数记忆* （closed-book）：知识过时难修；很难说明“答案来自哪里”；遇到长尾事实更易胡编。
+- *检索+抽取* （retrieve-and-extract）：很强但偏抽取式，不擅长需要自由表述/长文本/组合多证据的生成任务。
+- *松耦合检索-生成*: 检索器与生成器分开优化，目标不一致，检索到的内容未必真正服务最终生成质量。
+
+* INSIGHT
+
+*核心直觉*: 把“检索到的段落”当成可替换的外部记忆，并把“该信哪段证据”当成隐变量，让模型在端到端训练目标下自动学会对证据加权，而不是固定用单段上下文。
+
+*关键步骤*:
+1. 用稠密向量检索器 DPR（Dense Passage Retriever：把问题/段落编码成向量，用相似度做检索）从 Wikipedia 索引中取 top-K 段落，并得到 p(z|x)。
+2. 用生成器 BART（预训练的 seq2seq 文本生成模型）对每个候选段落分别计算 p(y|x,z)（做法是把 x 与 z 拼接后输入）。
+3. 用 top-K 加权边际化来训练/预测：把检索与生成统一到一个概率目标里；实践中固定文档编码器与索引，只微调查询编码器和生成器以降低重建索引成本。
+
+* DELTA
+
+*vs SOTA*:
+- 开放域问答（ODQA：问题不给证据，需从全库检索；指标常用 EM=Exact Match）上，RAG 在 NQ/WQ/CT 等数据集上刷新当时结果，并在 TQA 的可比划分上也达到最优或接近最优。
+- 在知识密集生成任务上，相比纯 BART 基线更“具体、事实性更强、更多样”，并展示了在检索不到“逐字包含答案”的段落时仍能生成正确答案的情况。
+
+*新拼图*:
+- 给 seq2seq 生成模型接上可替换的非参数记忆（Wikipedia 向量索引），并提供一个极简的“隐证据边际化”训练框架，让检索与生成可端到端对齐。
+
+* CRITIQUE
+
+*隐形假设*:
+- *库覆盖假设*: 你需要的事实在文档库里（论文用 2018-12 Wikipedia，切成 100 词 chunk）；否则再强也只能靠参数猜。
+- *topK 假设*: 有用证据落在前 K 个里；K 小会漏证据，K 大带来延迟和算力成本。
+- *检索可靠假设*: 检索错误会把生成“带偏”，导致更自信地胡编（hallucination with evidence-like context）。
+
+*未解之谜*:
+- *retrieval collapse*: 端到端训练时检索器可能退化为偏爱少数段落，如何稳定训练并保持证据多样性？
+- *可解释性边界*: 能输出被检索段落，但“生成时究竟依赖了哪句”仍难严格追踪与验证。
+- *工程落地*: ANN 索引、更新、缓存与一致性带来系统复杂度；如何在高吞吐场景维持低延迟与可更新性？
+
+* LOGIC FLOW
+
+#+begin_example
++---------+     +-------------------+      +--------------------------------+
+| input x | --> | query encoder q(x)| -->  | retrieve topK passages z_1..K  |
++---------+     +-------------------+      +--------------------------------+
+                                           |         scores -> p(z|x)       |
+                                           +---------------+----------------+
+                                                           |
+                                                           v
+                              +--------------------------------------------------+
+                              | generator (seq2seq) p(y | x, z_i) for each z_i   |
+                              +------------------------------+-------------------+
+                                                             |
+                                                             v
+                         +-------------------------------------------------------+
+                         | marginalize: sum_i p(z_i|x) * p(y|x,z_i)              |
+                         +------------------------------+------------------------+
+                                                        |
+                                                        v
+                                                   output y
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
++------------------------+         +------------------------------+
+| parametric memory      |         | non-parametric memory        |
+| (generator weights)    |         | (Wikipedia / corpus index)   |
++-----------+------------+         +--------------+---------------+
+            |                                     ^
+            |                                     |
+            v                                     |
+      +-------------+        retrieve evidence    |
+      |   RAG       |-----------------------------+
+      |  (mix)      |
+      +------+------+ 
+             |
+             v
+         generated y  (with optional cited passages)
+#+end_example

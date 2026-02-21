@@ -1,0 +1,125 @@
+#+title:      paper-roformer-rotary-position-embedding
+#+date:       [2026-02-15 Sun 19:11]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260215T191140
+#+source:     https://ar5iv.labs.arxiv.org/html/2104.09864
+#+authors:    Jianlin Su, Yu Lu, Shengfeng Pan, Ahmed Murtadha, Bo Wen, Yunfeng Liu
+#+venue:      arXiv:2104.09864 (2021)
+
+* PLAIN TALK
+
+Transformer 的注意力本质上是“把每个词拿去跟别的词做相似度匹配”，但如果模型不知道它们在句子里的相对位置，相似度就会变得很盲。本文提出一种很直接的做法：不再给每个位置塞一个向量，而是按位置把 Query/Key 向量在若干二维平面里旋转一个角度，让注意力分数天然只依赖“相隔多少步”。结果是在多种任务上能稳定工作，并且对更长序列更友好（无需训练一个固定长度的位置表）。
+
+* LANDSCAPE
+
+#+begin_example
+2017  Transformer: abs sinusoidal / learned position embedding
+  |
+2018  [TURN] Relative PE (Shaw et al.): add relative vectors/bias in attention
+  |        -> attention becomes distance-aware, but adds params/ops
+2019  Transformer-XL / XLNet: relative + recurrence for long context
+  |
+2020  T5: relative position bias; DeBERTa: disentangled pos/content
+  |
+2020  Linear attention: O(n) attention variants need PE-compatible forms
+  |
+2021  RoFormer: rotary position embedding (RoPE) [*THIS*]
+  |        -> rotate q/k by position; dot-product becomes function of (n-m)
+  |        -> limitation: gains can be task-dependent; frequency design is a new knob
+#+end_example
+
+* NAPKIN FORMULA
+
+#+begin_example
++-----------------------------------------------------------+
+| score(m,n) = dot( R(m) q_m , R(n) k_n )                   |
+|           = dot( q_m , R(n-m) k_n )                       |
++-----------------------------------------------------------+
+#+end_example
+
+含义：把第 m 个词的 query 和第 n 个词的 key 先按各自位置做同一种“旋转变换” R(.)，再做点积；点积等价于只看相对距离 (n-m) 的某种旋转，因此注意力天生变成“相对位置编码”。
+
+* PROBLEM
+
+*痛点定义*: 自注意力需要“知道顺序/距离”，但希望不引入大量额外参数，也能自然泛化到训练长度以外。
+
+*前人困境*:
+- 绝对位置向量：给了顺序，但注意力分数不直接是“相对距离”的函数；而且常见做法依赖最大长度。
+- 相对位置向量/偏置：能建模距离，但实现上往往更重（额外张量、额外算子、或更多参数），和一些注意力变体不兼容。
+
+* INSIGHT
+
+*核心直觉*: 与其“把位置当成一段要加进去的内容”，不如把位置当成一个几何变换：同一个词向量在不同位置只是被旋转了，旋转差就是相对距离。
+
+*关键步骤*:
+1. 把每个 d 维向量按 (x0,x1),(x2,x3)... 分成多个 2D 子空间；在每个 2D 子空间里做平面旋转。
+2. 旋转角度随位置线性变化：angle = position * theta_i（theta_i 用类似 sinusoid 的频率表）。
+3. 只对 attention 的 q/k 做旋转（value 不动）；这样 score(m,n) 自动只依赖 (n-m)，并保持向量长度不变（旋转是正交变换）。
+
+* DELTA
+
+*vs SOTA*:
+- 机制层面：给出一个“把相对位置写进 dot-product”的轻量方式，几乎不改 Transformer 主结构。
+- 经验层面（论文报告）:
+  - WMT14 En-De：RoFormer BLEU 27.3，接近/略低于基线 Transformer 27.5（单模型设置）。
+  - BERT-base 预训练 + GLUE：在 MRPC、QQP、STS-B 有提升，整体与基线同一量级。
+  - 长文本场景：在 RoBERTa-large 上用于 CAIL2018-ALR（法律长文）准确率更高。
+
+*新拼图*:
+- 把“相对位置”从 add/bias 方式，变成一种可组合的几何操作（rotate），因此更容易迁移到不同注意力实现（含线性注意力）。
+
+* CRITIQUE
+
+*隐形假设*:
+- 位置影响可用“旋转差”充分表达：等价于假设距离效应主要体现在相位变化，而不是任意可学习的距离函数。
+- 频率表 theta_i 的选择很关键：不同任务/长度分布下，哪组频率最合适并不总是清晰（论文用类似 sinusoid 的固定表）。
+- 线性注意力版本为了稳定保留了原分母（论文说明避免除零风险），这意味着权重不再严格是标准 softmax 注意力的概率形式。
+
+*未解之谜*:
+- 超长外推（远超训练长度）时，RoPE 的相位是否会出现周期性“混叠”导致注意力误判？如何系统规避？
+- RoPE 与各种归一化/缩放策略（如 QK scaling、RMSNorm）交互的最佳实践是什么？
+- 当任务需要非单调的距离偏好（例如固定窗口外突然需要全局跳连）时，纯旋转能否足够？
+
+* LOGIC FLOW
+
+#+begin_example
+[Need order in attention]
+        |
+        v
+[Goal: score depends on relative distance (n-m)]
+        |
+        v
+[Idea: treat position as a rotation operator R(pos)]
+        |
+        v
+[Method]
+  -> rotate q_m and k_n in paired 2D subspaces
+  -> use sinusoid-like frequencies for angles
+        |
+        v
+[Property]
+  -> dot(R(m)q, R(n)k) == dot(q, R(n-m)k)
+  -> length extrapolation; distance-aware decay
+        |
+        v
+[Plug into Transformer / (optionally) linear attention]
+        |
+        v
+[Empirical: competitive NMT, stable pretrain, better long-text tasks]
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
+2D subspace (x,y) at position m:
+  (x',y') = rotate((x,y), angle = m * theta)
+
+q_m rotated                 k_n rotated
+      \\                         /
+       \\       dot(.)          /
+        +----------------------+
+                 |
+                 v
+        depends on relative angle
+            (n - m) * theta
+#+end_example

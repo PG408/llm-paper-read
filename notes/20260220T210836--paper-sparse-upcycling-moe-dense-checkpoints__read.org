@@ -1,0 +1,119 @@
+#+title:      paper-sparse-upcycling-moe-dense-checkpoints
+#+date:       [2026-02-20 Fri 21:08]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260220T210836
+#+source:     https://ar5iv.labs.arxiv.org/html/2212.05055
+#+authors:    Aran Komatsuzaki, Joan Puigcerver, James Lee-Thorp, Carlos Riquelme, Basil Mustafa, Joshua Ainslie, Yi Tay, Mostafa Dehghani, Neil Houlsby
+#+venue:      arXiv (2212.05055)
+
+* PLAIN TALK
+
+训练一个大模型从零开始太贵了, 所以大家反复复用少数几个训练好的密集模型做下游任务. 但更省算力的稀疏模型 (比如 MoE, 就是一层里放很多个“专家”, 每个 token 只走少数几个) 想从头训练同样很烧钱. 这篇论文给了一个捷径: 直接拿现成的密集模型 checkpoint, 把其中一些 MLP 层复制成多个专家并加一个路由器, 然后继续训练一小段, 用不太多的追加预算换来更高的效果.
+
+* LANDSCAPE
+
+#+begin_example
+2015  Net2Net: function-preserving init for deeper/wider nets
+  |
+2017  Sparsely-Gated MoE (Shazeer): sparse routing, scale params without full FLOPs
+  |   [TURN] "capacity != compute" becomes practical
+  |
+2021  Switch Transformer / V-MoE: large-scale MoE pretraining recipes
+  |
+2022  Expert Choice routing: experts pick tokens (routing stability / load)
+  |
+2022  Sparse Upcycling (this work) [*THIS*] <===
+  |   key shift: reuse an existing dense checkpoint as the MoE starting point
+  |   limitation: still needs extra pretraining data/compute; best at +10%~+60% add-on budget
+#+end_example
+
+* NAPKIN FORMULA
+
+#+begin_example
++-----------------------------------------------------------+
+|                                                           |
+|   MoE_upcycled = Dense_ckpt + replicate(MLP -> E experts) |
+|                  + init(random router) + extra_pretrain   |
+|                                                           |
++-----------------------------------------------------------+
+#+end_example
+
+含义: 先拿到一个训练好的密集 checkpoint (Dense_ckpt). 把其中的 MLP 层替换成 E 个“复制出来的专家”并加一个随机初始化的路由器 (router), 再追加一段预训练 (extra_pretrain) 让路由器分流 token, 专家逐渐分化, 用较小的追加算力换更大的模型容量.
+
+* PROBLEM
+
+*痛点定义*: 在不付出“从头训练一个大规模稀疏 MoE”的全额成本下, 让已有的密集模型 checkpoint 通过结构升级获得更高的质量/容量.
+
+*前人困境*: 直接把训练好的网络结构改掉 (例如把 MLP 改成 MoE) 往往会立刻掉点, 需要很多数据和步数才能恢复. 而继续训练原密集模型 (dense continuation) 虽然稳定, 但通常是“多花很多算力才涨一点点”. 训练 MoE 从零开始也很昂贵, 且路由训练与负载均衡带来额外不稳定性.
+
+* INSIGHT
+
+*核心直觉*: 不要让“结构升级”从随机权重开始. 把密集模型里已经学到的 MLP 直接复制成多个专家, 先保证每个专家一开始都像原来的那层一样能干活, 让新增的 router 在后续训练里慢慢学会怎么分流 token, 这样就把最难的冷启动问题变成了一个平滑过渡问题.
+
+*关键步骤*:
+1. *Model surgery*: 保持 Transformer 的层数与形状不变, 只把一部分 MLP 层替换为 MoE 层; 其余参数 (注意力/归一化/embedding 等) 全部从 dense checkpoint 直接拷贝.
+2. *Expert init by cloning*: 每个 MoE 层的每个 expert 都初始化为“原 MLP 的一份拷贝”; 新增 router 是唯一随机初始化的模块.
+3. *Continue pretraining with minimal disruption*: 延续原来的训练超参轨迹 (batch size, 学习率 schedule, weight decay 等), 继续训练若干步; 路由上优先用 Expert Choice (常用容量因子 C=2), 并在 MoE 层数/专家数上做算力-质量折中.
+
+* DELTA
+
+*vs SOTA*:
+- 在“追加训练预算约为原始 dense 预训练成本的 50%”时, upcycled 的 T5 Base/Large/XL 与 ViT Base/Large 在 SuperGLUE 与 ImageNet 上显著优于各自的 dense 对照.
+- 论文点名的计算性价比例子: ViT-B/16 在 ImageNet 10-shot 想提升至少 1%, dense continuation 需要额外约 58% 的训练时间; upcycling 只需要约 13%.
+- 语言侧例子: upcycled T5-Base 与 T5-Large 在 SuperGLUE 上比 dense 对照高约 1.5-2 个绝对点, 额外训练分别约 55% 与 46%.
+- 在相同或更大的预算下, upcycling 还能优于“从头训练的稀疏 MoE”, 说明复制初始化能有效减少 MoE 的数据饥渴与恢复期.
+
+*新拼图*:
+- 给出一个可迁移的“稀疏化升级”范式: 把社区大量存在的 dense checkpoints, 变成更高容量的 MoE 起点, 而不是重新从随机初始化烧一遍.
+- 把 MoE 的关键难点从“从零训练”转移到“在固定追加预算内选好 MoE 配置”, 并用系统消融指出哪些开关最影响收益 (路由类型, MoE 层数, 容量因子, 是否复用 optimizer state 等).
+
+* CRITIQUE
+
+*隐形假设*:
+- 必须还能在接近原预训练分布的数据上继续训练, 且你的场景确实有 +10%~+60% 这段“追加预算窗口”. 如果只允许极少步数, router 可能学不起来; 如果预算很大, 从头训练的 MoE 可能追上甚至更好.
+- “专家全都从同一个 MLP 复制”会带来强对称性, 依赖 router 和后续训练打破对称并产生有效分工. 如果路由训练不稳定或负载分配不好, 可能出现专家塌缩或收益变小.
+- 论文的成本口径主要是训练侧 (如 TPU-core-days/steps). 真实部署时 MoE 的通信/并行/参数存储开销, 可能吞掉一部分表面 FLOPs 优势.
+
+*未解之谜*:
+- router 能否也 warm start (例如用 dense 激活统计初始化), 进一步降低“手术后”的初始掉点与恢复期.
+- 除了替换 MLP, 是否存在对注意力/其他子模块的更通用 upcycling, 以及对不同架构 (非 Transformer, 或不同 MLP 形态) 的适用边界.
+- 如何量化与提升“专家多样性”: 论文尝试给复制的专家加噪声帮助分化但收益有限, 更系统的分化机制仍是开放问题.
+
+* LOGIC FLOW
+
+#+begin_example
+Problem: dense checkpoints are abundant, but training MoE from scratch is costly
+  |
+  | - direct architecture change causes an initial quality drop
+  | - dense continuation is compute-inefficient for extra gains
+  v
+Insight: start MoE from a function-preserving point
+  |
+  | - clone the trained dense MLP into many experts
+  | - let a new router learn token->expert assignment later
+  v
+Method: sparse upcycling
+  |
+  | - replace some MLP layers with MoE blocks
+  | - experts = identical copies of the original MLP
+  | - router = random init (prefer Expert Choice; set capacity factor)
+  | - continue pretraining with the original hyperparameter schedule
+  v
+Outcome: better quality per added compute
+  |
+  | - improves SuperGLUE / ImageNet vs dense continuation
+  | - can beat scratch-trained sparse MoE at comparable budgets
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
+Before (dense):
+  token -> ... -> [ MLP ] -> ...
+
+After (upcycled MoE):
+  token -> ... -> [ router ] --top-k--> [ expert_1: MLP copy ] --\
+                        |             [ expert_2: MLP copy ] ---+--> combine -> ...
+                        |                 ...                   /
+                        +-----------top-k--> [ expert_E: MLP copy ]
+#+end_example

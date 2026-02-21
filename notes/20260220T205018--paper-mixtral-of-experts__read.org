@@ -1,0 +1,144 @@
+#+title:      paper-mixtral-of-experts
+#+date:       [2026-02-20 Fri 20:50]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260220T205018
+#+source:     https://ar5iv.labs.arxiv.org/html/2401.04088
+#+authors:    Albert Q. Jiang, Alexandre Sablayrolles, Antoine Roux, Arthur Mensch, Blanche Savary, Chris Bamford, Devendra Singh Chaplot, Diego de las Casas, Emma Bou Hanna, Florian Bressand, Gianna Lengyel, Guillaume Bour, Guillaume Lample, Lélio Renard Lavaud, Lucile Saulnier, Marie-Anne Lachaux, Pierre Stock, Sandeep Subramanian, Sophia Yang, Szymon Antoniak, Teven Le Scao, Théophile Gervet, Thibaut Lavril, Thomas Wang, Timothée Lacroix, William El Sayed
+#+venue:      arXiv preprint (2024)
+
+* PLAIN TALK
+
+这篇论文想解决的是: 我既想让模型“脑容量”变大、能力接近 70B 级别，又不想每个字都付出 70B 级别的推理成本。作者把模型改成“8 个专家轮班”的结构，每个 token 只叫来其中 2 个专家干活，所以总参数很大，但每步实际算的参数规模更小。结果是 Mixtral 8x7B 在多项基准上能打平或超过 Llama 2 70B 和 GPT-3.5，且给出 Instruct 版本并以 Apache 2.0 开源权重。
+
+* LANDSCAPE
+
+#+begin_example
+2017  Sparse-Gated MoE (Shazeer et al.)
+  |     -> conditional compute: many experts, few active per token
+2020  [TURN] GShard
+  |     -> MoE + expert parallelism makes scaling practical
+2021  Switch Transformer
+  |     -> simpler routing, MoE becomes mainstream for LMs
+2022  Megablocks
+  |     -> sparse MoE kernels/training get much faster
+2023  Llama 2 70B
+  |     -> strong open-weights dense baseline
+2023  Mistral 7B
+  |     -> efficient small dense backbone
+2024  Mixtral 8x7B (top-2 MoE every layer) [*THIS*]
+  |     -> 32k context + multilingual upsampling + Apache 2.0
+  |     -> limitation: routing overhead + load balance; 47B sparse params memory
+  |     -> limitation: experts show weak "topic" specialization in their analysis
+#+end_example
+
+* NAPKIN FORMULA
+
+#+begin_example
++----------------------------------------------------------+
+|                                                          |
+|   y = sum_{e in top2(router(x))} gate_e(x) * expert_e(x) |
+|                                                          |
++----------------------------------------------------------+
+#+end_example
+
+含义: 对某个 token 的隐藏向量 x, 先用 router 给 8 个专家打分, 只选分数最高的 2 个(top2); gate_e(x) 是这两个专家的归一化权重(类似 softmax 后的系数); expert_e(x) 是第 e 个专家的前馈网络输出(本文里是 SwiGLU FFN); 最后把两路结果按权重相加得到 y。
+
+* PROBLEM
+
+*痛点定义*: 在可控的推理延迟/算力下, 把语言模型的有效容量做大, 同时保持通用能力(尤其是数学、代码、多语言)。
+
+*前人困境*: 直接把 dense Transformer 做到 70B 以上, 每个 token 都要过一遍全部参数, 成本和延迟硬上去; 同时长上下文(32k)会进一步放大训练/推理负担。
+
+* INSIGHT
+
+*核心直觉*: “总参数可以很大, 但每个 token 只激活其中一小部分”——用稀疏 MoE 把容量和每步计算解耦。
+
+*关键步骤*:
+1. 把每层 FFN 换成 8 个专家的 MoE, 并用 top-2 路由让每个 token 只走 2 个专家, 输出做加权求和。
+2. 专家函数用标准的 SwiGLU FFN, 让“专家”本质上是可并行的矩阵乘; 工程上依赖高效稀疏 kernel(如 Megablocks)与并行策略(如 Expert Parallelism)来吃到速度。
+3. 预训练侧强调 32k dense 长上下文与多语言数据占比上采样; 对话版用 SFT + DPO 做指令对齐, 再用人类评测基准对比闭源/开源模型。
+
+* DELTA
+
+*vs SOTA*:
+- 结构层面: token 可“访问”的总参数约 47B(sparse 参数), 但每步只激活约 13B(active 参数)做推理计算。
+- 能力层面(按论文报告): base 模型在多项基准上匹配或超过 Llama 2 70B 与 GPT-3.5, 尤其在数学、代码、多语言更强; 32k 上下文的信息检索能力在不同位置/长度下较稳定。
+- 对齐层面: Mixtral Instruct 使用 SFT 后接 DPO, 在 MT-Bench 等人类评测基准上超过若干当时主流模型。
+
+*新拼图*:
+- 给出一个“开源权重 + 旗舰性能”的 MoE 参考点: 证明 sparse MoE 能以较小 active compute 对标大 dense 模型。
+- 附带了路由行为的实证观察(主题专门化不明显、但有 token 局部性), 让后续做系统优化/缓存/并行有抓手。
+
+* CRITIQUE
+
+*隐形假设*:
+- 负载均衡假设: 路由必须足够均匀, 否则 EP/多卡训练推理会出现热点专家导致吞吐崩盘; 但论文对“如何保证均衡”的训练细节披露有限。
+- 工程兑现假设: MoE 有路由与额外 memory load 开销, 真正的速度优势依赖特定 kernel/实现和足够的 batch/算术强度; 否则可能只得到“更复杂但不更快”。
+- 可复现假设: 预训练数据配方、token 数、训练日程等关键信息较少, 外部很难从零复现到同等水平, 更像是一次产品级发布说明。
+
+*未解之谜*:
+- 专家到底学到了什么: 论文分析里“按主题的专家专门化”不明显, 更像是对某些符号/格式的路由规律; 这会影响我们如何做可解释性与可控路由。
+- 如何系统性利用 token 局部性: 高层出现的连续 token 同专家分配, 既可能加剧专家过载, 也可能用于缓存/重排, 但缺少可操作的系统方案。
+- MoE 的下一步尺度化: 更多专家、更大的 K、或更动态的路由, 如何在不炸负载/显存/通信的前提下继续扩展, 论文没有回答。
+
+* LOGIC FLOW
+
+#+begin_example
+[Goal: big capacity, cheap per-token compute]
+        |
+        v
+[Replace FFN with MoE (8 experts)]
+        |
+        v
+[Router picks top-2 experts per token]
+        |
+        v
+[Compute two SwiGLU FFNs + weighted sum]
+        |
+        v
+[Train with 32k context + more multilingual data]
+        |
+        v
+[Eval: math/code/multilingual vs Llama 2 70B, GPT-3.5]
+        |
+        v
+[Align: SFT -> DPO to get Instruct]
+        |
+        v
+[Analyze routing: weak topic specialization + strong locality]
+        |
+        v
+[Boundary: routing overhead, load balance, reproducibility]
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
+token hidden x
+    |
+    v
++-----------+        +------------------+
+| router(x) |----->  | pick top-2 expert|
++-----------+        +------------------+
+    |                         |
+    |                 +-------+--------+
+    |                 |                |
+    v                 v                v
+  gate_1          expert_1(x)      expert_2(x)
+  gate_2             |                |
+    |                v                v
+    |           SwiGLU FFN        SwiGLU FFN
+    |                |                |
+    +--------+-------+--------+-------+
+             |                |
+             v                v
+        gate_1 * out_1   gate_2 * out_2
+             \              /
+              \            /
+               +----------+
+               |  add/sum |
+               +----------+
+                    |
+                    v
+                 output y
+#+end_example

@@ -1,0 +1,130 @@
+#+title:      paper-bert-pre-training-deep-bidirectional-transformers
+#+date:       [2026-02-14 Sat 17:21]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260214T172116
+#+source:     https://ar5iv.labs.arxiv.org/html/1810.04805
+#+authors:    Jacob Devlin, Ming-Wei Chang, Kenton Lee, Kristina Toutanova
+#+venue:      NAACL-HLT 2019 (arXiv:1810.04805)
+
+* PLAIN TALK
+
+这篇论文在解决一个很实际的问题：以前的语言模型读句子时要么只看左边，要么把左右信息拼起来但不够深，导致很多理解任务做不准。作者的方法是先让模型在海量无标注文本里做“完形填空”和“判断两句是否相邻”两件事，再拿到具体任务上微调。结果是几乎所有主流英文理解基准都刷新了当时最好成绩，说明“先通读再精调”这条路线非常有效。
+
+* LANDSCAPE
+
+#+begin_example
+2013  word2vec/GloVe
+  |   static vectors: one word, one embedding
+  v
+2015  seq2seq attention era
+  |   transfer mostly from labeled supervision
+  v
+2018  ELMo (deep contextual features)
+  |   turn: from static embedding to contextual embedding
+  v
+2018  ULMFiT / OpenAI GPT
+  |   turn: pretrain then fine-tune, but mostly left-to-right LM
+  v
+2018  BERT [*THIS*] <===
+  |   deep bidirectional encoder + masked word recovery + next sentence relation
+  |   limits: heavy compute cost, mask-token mismatch, 512 token context cap
+  v
+2019+  RoBERTa/ALBERT/DistilBERT and beyond
+      remove/modify NSP, scale data, compress models, improve efficiency
+#+end_example
+
+* NAPKIN FORMULA
+
+#+begin_example
++----------------------------------------------------------+
+|                                                          |
+|   total pretrain objective                               |
+|   = masked word recovery loss                            |
+|   + next sentence relation loss                          |
+|                                                          |
++----------------------------------------------------------+
+#+end_example
+
+一句话解释：模型一边练“把被遮住的词猜回来”，一边练“判断两句是否前后相连”，两项能力共同塑造可迁移的语言理解能力。
+
+* PROBLEM
+
+*痛点定义*: 在几乎不增加任务特定结构的前提下，如何学到可直接迁移到多种 NLP 任务的深层双向语义表示。
+
+*前人困境*: 早期单向语言模型只能用一侧上下文；双向做法常依赖浅层拼接；大规模预训练到微调的路线刚出现，跨任务泛化能力和稳定收益都不足。
+
+* INSIGHT
+
+*核心直觉*: 不让模型按顺序“背台词”，而是随机遮住一小部分词，让它同时看左右文去补全，再额外学习句子间衔接关系。
+
+*关键步骤*:
+1. 使用 masked language model：训练时随机选 15% 词位做预测，其中大部分替换成特殊遮盖词，迫使模型学习真正的双向语境推断。
+2. 联合训练 next sentence prediction：输入句对并判断是否为原文相邻句，把“句内理解”扩展到“句间关系”，直接服务问答和自然语言推断。
+
+* DELTA
+
+*vs SOTA*: 论文报告在当时 11 个任务上刷新结果；例如 GLUE 总分约从 72.8 提升到 80.5（+7.7），MultiNLI 准确率约 +4.6，SQuAD v1.1 测试 F1 到 93.2。
+
+*新拼图*: 证明“统一的预训练 Transformer 编码器 + 轻量任务头微调”可以成为通用 NLP 基座，推动后续大模型时代的标准范式。
+
+* CRITIQUE
+
+*隐形假设*:
+- 默认你有足够算力和海量高质量无标注语料，否则大模型预训练收益会明显缩水。
+- 默认预训练目标和下游分布差异可被微调弥合，但训练中出现的遮盖词在真实下游输入里并不存在，存在目标错配。
+
+*未解之谜*:
+- next sentence prediction 是否真是关键组件并不彻底清晰，后续工作对其有效性有分歧。
+- 模型上下文窗口上限 512 token，对超长文档推理能力有限；效率和部署成本也未根治。
+
+* LOGIC FLOW
+
+#+begin_example
++-------------------+      +-------------------------+
+| hard NLP transfer | ---> | need universal language |
+| across many tasks |      | representation          |
++-------------------+      +-------------------------+
+             |                           |
+             v                           v
++-------------------+      +-------------------------+
+| key idea          | ---> | train with two signals  |
+| bidirectional     |      | word recovery + sentence|
+| context learning  |      | relation judgment       |
++-------------------+      +-------------------------+
+             |                           |
+             v                           v
++-------------------+      +-------------------------+
+| pretrained BERT   | ---> | fine-tune with minimal  |
+| base/large model  |      | task-specific heads     |
++-------------------+      +-------------------------+
+             |                           |
+             +-------------> +------------------------+
+                             | broad SOTA gains       |
+                             | on GLUE, SQuAD, NLI    |
+                             +------------------------+
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
+               left context        right context
+                    \                 /
+                     \               /
+               +-------------------------+
+               |   hidden center word    |
+               |   recover by both sides |
+               +-------------------------+
+                     /               \
+                    /                 \
+            sentence A            sentence B
+                    \                 /
+                     \               /
+               +-------------------------+
+               | relation yes or no      |
+               | adjacent or random      |
+               +-------------------------+
+
+core picture:
+one encoder learns inside-sentence clues and cross-sentence linkage,
+then one small task head adapts it to many downstream tasks.
+#+end_example

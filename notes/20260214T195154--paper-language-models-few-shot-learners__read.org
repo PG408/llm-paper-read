@@ -1,0 +1,125 @@
+#+title:      paper-language-models-few-shot-learners
+#+date:       [2026-02-14 Sat 19:51]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260214T195154
+#+source:     https://ar5iv.labs.arxiv.org/html/2005.14165
+#+authors:    Tom B. Brown et al.
+#+venue:      arXiv:2005.14165 (2020)
+
+* PLAIN TALK
+
+这篇论文想解决一个很现实的问题：每来一个新任务都要单独标注数据、单独训练模型，成本太高。作者证明，只要把语言模型做得足够大，并在提示里给几个例子，它就能直接做新任务，不用再参数微调。核心结论是：规模化本身会带来“少样本学习”能力，但在严格推理和事实可靠性上仍有明显短板。
+
+* LANDSCAPE
+
+#+begin_example
+2013  word2vec embeddings
+  |
+2018  ELMo / BERT era: strong transfer via task-specific fine-tuning
+  |
+2018  GPT-1: generative pretrain + supervised adaptation
+  |
+2019  GPT-2 (1.5B): bigger LM, better zero-shot signals
+  |
+2020  T-NLG (17B): scale trend continues
+  |
+2020  GPT-3 (175B) [*THIS*] <===
+      key turn: in-context learning at scale
+      limit: still weak on compositional reasoning and factual consistency
+#+end_example
+
+* NAPKIN FORMULA
+
+#+begin_example
++----------------------------------------------------------+
+|                                                          |
+|   Capability = Scale(pretrain tokens x parameters)       |
+|                + Prompt examples in context              |
+|                - Reasoning/Factual error floor           |
+|                                                          |
++----------------------------------------------------------+
+#+end_example
+
+一句话解释公式含义：能力随“预训练规模”和“上下文示例”上升，但会被推理错误和事实幻觉形成的下限卡住。
+
+* PROBLEM
+
+*痛点定义*: 如何让同一个语言模型在新任务上少依赖标注和微调，直接通过提示就可用。
+
+*前人困境*: 迁移学习很强，但主流方法仍依赖每个任务的参数更新；零样本效果不稳定，小模型难以从上下文临时“学会规则”。
+
+* INSIGHT
+
+*核心直觉*: 把“学习”从参数里部分搬到上下文里，模型在读到几个示例后，能临时推断任务格式并执行。
+
+*关键步骤*:
+1. 极限放大模型与数据规模（175B 参数，海量混合语料），逼出上下文学习能力。
+2. 统一评测 one-shot / few-shot / zero-shot，而不是只看微调后成绩。
+3. 用同一模型跨任务验证泛化，强调“任务接口=文本提示”这一范式。
+
+* DELTA
+
+*vs SOTA*: 在多个基准上显著提升 few-shot 表现；例如 LAMBADA 达到约 76 percent，TriviaQA 达到约 72 percent，部分数据集可接近甚至匹配有监督 SOTA。
+
+*新拼图*: 论文把“模型规模 -> 任务无关的 in-context learning 能力”这条经验规律做成了可复现现象，推动了“提示即编程接口”的研究路线。
+
+* CRITIQUE
+
+*隐形假设*:
+- 规模律可持续：默认继续堆算力和数据仍能稳定换来泛化收益。
+- 预训练分布足够覆盖目标任务：默认任务需求可在语料统计中被“撞见”。
+- 提示格式可被模型稳定解析：默认不同写法不会导致大幅性能震荡。
+
+*未解之谜*:
+- 推理链条脆弱：多步逻辑和组合泛化仍不可靠。
+- 事实真实性缺乏硬约束：模型会流畅地产生错误信息。
+- 公平性与偏见问题仍在：放大数据也会放大语料中的社会偏差。
+- 计算成本极高：训练/部署门槛限制了可复制性与可审计性。
+
+* LOGIC FLOW
+
+#+begin_example
++-------------------+      +-------------------------+
+| per-task tuning   | ---> | expensive + brittle     |
+| bottleneck        |      | transfer workflow       |
++-------------------+      +-------------------------+
+           |
+           v
++-------------------+      +-------------------------+
+| insight: learning | ---> | move adaptation into    |
+| from context      |      | prompt context          |
++-------------------+      +-------------------------+
+           |
+           v
++-------------------+      +-------------------------+
+| method: massive   | ---> | evaluate zero/one/few   |
+| autoregressive LM |      | shot on many benchmarks |
++-------------------+      +-------------------------+
+           |
+           v
++-------------------+      +-------------------------+
+| result: strong    | ---> | but reasoning/factual   |
+| few-shot transfer |      | errors remain           |
++-------------------+      +-------------------------+
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
+             prompt text stream
+
+[task instruction] [demo 1] [demo 2] [query]
+        |             |         |        |
+        +-------------+---------+--------+
+                      |
+                      v
+             +------------------+
+             |  GPT-3 (175B)    |
+             |  next-token core |
+             +------------------+
+                      |
+                      v
+              [task-form output]
+
+note: no weight update, adaptation happens in context window
+#+end_example

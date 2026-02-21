@@ -1,0 +1,150 @@
+#+title:      paper-smol-training-playbook-world-class-llms
+#+date:       [2026-02-21 Sat 19:58]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260221T195840
+#+source:     https://huggingfacetb-smol-training-playbook.hf.space (mirror: https://huggingface.co/spaces/HuggingFaceTB/smol-training-playbook)
+#+authors:    Loubna Ben Allal, Lewis Tunstall, Nouamane Tazi, Elie Bakouch, Ed Beeching, Carlos Miguel Patino, Clementine Fourrier, Thibaud Frere, Anton Lozhkov, Colin Raffel, Leandro von Werra, Thomas Wolf
+#+venue:      Hugging Face Space / training playbook (published Oct 30, 2025)
+
+* PLAIN TALK
+
+这篇文章想解决的事很直白: 如果你真要从零训练一个“能用”的小模型, 最容易死在什么地方, 又该怎么活下来。
+作者用训练 SmolLM3-3B (11T tokens) 的真实过程, 把“选架构/超参/数据”到“吞吐暴跌/跑到 1T 才发现性能不对/被迫重启”的坑一条条扒开。
+结论是: 真正决定成败的通常不是某个神奇技巧, 而是一个能在现实系统里持续迭代的闭环: 目标 -> ablation -> 自动评测 -> 稳定基础设施 -> 数据配比。
+
+* LANDSCAPE
+
+#+begin_example
+训练大模型(尤其是开源可部署)的“主线故事”
+
+Pre 2017    Transformer 让规模化训练成为主流
+      |
+      v
+    2020    Kaplan scaling laws: 规模 -> 性能可预测 <== [TURN]
+      |     - 研发范式变成“算力约束下的最优分配”
+      v
+    2022    Chinchilla: 更长训练/更多 tokens 更划算 <== [TURN]
+      |     - 从“更大”转向“更久 + 更好数据”
+      v
+    2023    开源权重浪潮(Llama 等) -> 训练/对齐开始大众化
+      |
+      v
+    2024    数据与工程被系统化(FineWeb, Ultra-Scale, eval guidebook) <== [TURN]
+      |     - 公开 recipe 变多, 但“怎么做取舍/怎么处理事故”仍碎片化
+      v
+    2025    推理/对齐范式加速(RL/GRPO 等) -> post-training 复杂度上升
+      |
+      v
+    2025-10 Smol Training Playbook [THIS]
+      |     - 把架构 ablation + 数据混配 + 集群 debug + post-training 串成一条可复用流程
+      |     - limitation: 许多细节强依赖 HF 技术栈与 384x H100 级算力条件
+      v
+Post 2025   “工程第一性”训练报告成为主流竞争力
+
+#+end_example
+
+* NAPKIN FORMULA
+
+#+begin_example
++---------------------------------------------------------------+
+|  time_seconds = total_tokens / (throughput_tok_s_gpu * gpus)  |
++---------------------------------------------------------------+
+#+end_example
+
+一句话解释: 训练时长由 “要吃掉的 tokens 总量” 除以 “整体吞吐” 决定; 其中 throughput_tok_s_gpu 是每张卡每秒处理的 tokens, gpus 是 GPU 数量。吞吐掉 50%, 训练时间就直接翻倍。
+
+* PROBLEM
+
+*痛点定义*: 在固定算力与期限内, 从零训练一个 3B 模型吃完 11T tokens, 同时要兼顾英语/多语、数学、代码与长上下文, 并且训练过程要能扛住真实集群的抖动与软件 bug。
+
+*前人困境*:
+- 公开 recipe 往往只给“最后那份配置”, 很少给“怎么做取舍/怎么排实验优先级/怎么止损重启”。
+- 小规模 ablation 的结论经常无法外推到 11T tokens 的长跑; 真问题可能在 1T tokens 才暴露。
+- 评测噪声大且昂贵, 很容易“以为在进步”或“被假信号带跑偏”。
+
+*这篇文章给出的关键现实约束*:
+- 规模: 3B 参数, 11T tokens, 训练数据约 24 TB, 384x H100 (48 nodes), 目标 MFU 约 30%。
+- 评测成本: 全套 eval 约 1.5 小时/GPU, 每 10B tokens 评一次; 长上下文评测约 1 小时/8 GPU; 总评测成本略低于 10,000 GPU hours。
+- 迭代成本: ablation + debug 消耗 161,280 GPU hours, 超过主跑(276,480 GPU hours)的一半。
+
+* INSIGHT
+
+*核心直觉*: 把训练看成“决策闭环”而不是“一次性把超参抄对”。在算力有限时, 你更需要能持续前进的流程(目标定义、可控实验、自动评测、稳定工程), 而不是追逐某个可能只带来 1% 的新技巧。
+
+*关键步骤*:
+1. *训练指南针(Training Compass)*: 先把目标写死(要什么/不要什么), 决定 trade-off 的优先级, 否则实验空间是无穷的。
+2. *可扩展的 ablation 流水线*: 用 WSD (warmup-stable-decay) 这类“可中途延长”的学习率日程 + 自动 eval, 让你能在不推倒重来的情况下扩训、插入中途实验, 并用一致的指标做决策。
+3. *长上下文路线前置*: 通过 document masking + (R)NoPE 打基础, 再用分阶段上下文扩展 4k -> 32k -> 64k 训练, 最后用 YaRN 做 128k 推理外推; 把“长上下文”从最后补丁变成全程设计目标。
+
+* DELTA
+
+*vs SOTA*: 它不是一篇“提出新结构/新算法”的论文, 而是一份把训练 SOTA 过程中真正会发生的工程与决策问题写清楚的 playbook。其产物 SmolLM3-3B 在多语、数学/代码与长上下文任务上达到同级别开源模型可竞争的水平, 同时强调小模型的推理成本与本地部署价值。
+
+*新拼图*:
+- “工程事故是主线剧情”: 吞吐暴跌、存储抖动、dataloader shuffling、TP seed 这种问题, 都会实打实吞掉你一半以上的预算。
+- “评测不是免费午餐”: eval 需要自动化, 需要设计去噪, 还需要承认某些基准(尤其长上下文 base model)信号很不稳定。
+- “数据混配更像炼金术”: mixture 的反直觉 trade-off 很难靠直觉解决, 需要多阶段策略 + 有目标的 ablation。
+
+* CRITIQUE
+
+*隐形假设*:
+- 你能拿到长时间稳定的 GPU 预留(384x H100, 约 1 个月)以及足够成熟的工程支持(监控、存储分层、自动评测、对象存储、容错重启)。
+- 你可以承受“跑到 1T tokens 发现不对就重启”的组织成本; 很多团队现实中做不到这么果断。
+- 你的核心需求可以被公开 benchmark 近似; 但作者也展示了不少 benchmark 噪声与偏差问题。
+
+*未解之谜*:
+- 自动化 mixture tuning 仍然难落地: DoReMi/Rho-Loss/RegMix 等方法存在工程复杂度与稳定性门槛, 最终很多决策仍靠人工 + ablation。
+- 长上下文 base model 的可靠评测仍缺“低噪声、低成本、强区分度”的统一方案(HELMET 很噪, RULER 更稳但覆盖面有限)。
+- 分布式训练正确性验证缺少一次性保障; TP seed 这类“训练能跑但持续掉性能”的 bug 很难靠表面监控发现。
+
+* LOGIC FLOW
+
+#+begin_example
+问题: 在固定预算内训练一个多目标 LLM
+  |   - 目标冲突: 英语 vs 多语 vs 数学/代码 vs 长上下文
+  |   - 现实约束: 算力/时间固定, 集群与软件不完美
+  v
+洞见: 训练 = 决策闭环, 数据与工程常常 > 花哨技巧
+  |   - 先定目标与优先级(Compass), 再做可控实验
+  |   - 用自动评测与监控把“感觉”变成“证据”
+  v
+方法: 可迭代的训练流水线
+  |   - ablation: WSD + 统一 eval + 逐步扩基线
+  |   - 长上下文: doc masking + NoPE + 4k->32k->64k, YaRN 外推到 128k
+  |   - 工程: throughput/存储/dataloader/并行正确性(如 TP seed)作为一等公民
+  v
+结果: 一个能交付的开源模型 + 一套能复用的“活下去方法”
+  |   - base model: 3B/11T, 多语/数学/代码/长上下文均衡
+  |   - 工程产物: checklist + debug playbook + 计算/评测成本透明化
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
+                 +----------------------+
+                 | 训练目标(Compass)    |
+                 +----------+-----------+
+                            |
+                            v
+  +-------------------------+-------------------------+
+  | 小规模 ablation (架构/超参/数据配比/长上下文策略) |
+  +-------------------------+-------------------------+
+                            |
+                            v
+                 +----------+-----------+
+                 | 自动评测 + 监控      |
+                 | (loss, benchmarks,   |
+                 |  throughput, health) |
+                 +----------+-----------+
+                            |
+                            v
+                 +----------+-----------+
+                 | 决策与止损           |
+                 | (继续/切换/重启)     |
+                 +----------+-----------+
+                            |
+                            v
+                 +----------+-----------+
+                 | 主跑 + 事故处理      |
+                 +----------------------+
+#+end_example

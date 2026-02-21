@@ -1,0 +1,122 @@
+#+title:      paper-react-synergizing-reasoning-acting
+#+date:       [2026-02-18 Wed 16:42]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260218T164215
+#+source:     https://arxiv.org/pdf/2210.03629
+#+authors:    Shunyu Yao; Jeffrey Zhao; Dian Yu; Nan Du; Izhak Shafran; Karthik Narasimhan; Yuan Cao
+#+venue:      ICLR 2023
+
+* PLAIN TALK
+
+以前的大模型要么只会在脑子里“想”（写一串推理步骤），要么只会按模板“做”（输出动作/搜索），两者一割裂就容易胡编、走偏、还不容易排查。本文提出 ReAct：让模型在做每一步动作之前/之后，都写下简短的想法，并允许它去外部环境（如 Wikipedia）查证或补信息，再继续推理。结果是：在问答、事实核查、以及长序列交互任务里，用很少示例也能更稳地完成任务，同时把“我为什么这么做”暴露出来更可解释。
+
+* LANDSCAPE
+
+#+begin_example
++-----------------------------------------------------------------------------------+
+| 2019  ELI5 (long-form QA)                                                         |
+| 2021  WebGPT (LM + browser + RLHF)          <turn: LM starts acting on the web>   |
+| 2021  Scratchpad (explicit intermediate steps)                                    |
+| 2022  CoT (chain-of-thought prompting)      <turn: reasoning becomes explicit>    |
+| 2022  Self-Consistency (sample + vote)                                            |
+| 2022  SayCan (LLM proposes actions + affordance rerank)                           |
+| 2022  Inner Monologue (feedback text in closed-loop)                              |
+| 2022  WebShop / ALFWorld (long-horizon text interaction benchmarks)               |
+| 2023  ReAct (interleave THOUGHT + ACTION + OBS)  [*THIS*]                         |
+|       limit: prompt budget; behavior depends on exemplars; tool interface brittle |
++-----------------------------------------------------------------------------------+
+#+end_example
+
+* NAPKIN FORMULA
+
+#+begin_example
++-----------------------------------------------------------+
+| tau = [input; (THOUGHT_t, ACTION_t, OBS_t)*; FINISH]      |
++-----------------------------------------------------------+
+#+end_example
+
+一句话解释：把“想法(THOUGHT)”当成一种不会改变外部世界的“动作”，把“行动(ACTION)”当成会触发环境返回“观察(OBS)”的动作；模型每走一步就把这些文本都追加进上下文，让后续每一步都能同时利用内部推理和外部反馈。
+
+* PROBLEM
+
+*痛点定义*: 让大语言模型既能“想清楚”，又能在不确定/缺知识时“去查、去试、再修正”，并且过程可诊断。
+
+*前人困境*:
+- 纯推理(如 CoT)：推理链写得像样，但缺少外部锚点，容易“编事实”(hallucination)并把错误一路传播下去。
+- 纯行动(只输出工具调用/动作)：能查资料/能动起来，但缺少高层目标分解与工作记忆，很容易迷路、重复、或在长时序任务里丢状态。
+- 现实任务常同时需要：内部结构化推理 + 外部信息获取/环境试错；但两类研究长期分开做。
+
+* INSIGHT
+
+*核心直觉*: 人类做事时“想”和“做”是交织的；把“想法”也当成一个可生成、可追加、可检查的序列元素，就能让模型在行动前后持续更新计划，并用外部观察来纠偏。
+
+*关键步骤*:
+1. *扩展动作空间*: 把“语言中的想法(THOUGHT)”并入动作序列，形成 (THOUGHT, ACTION, OBS) 的统一轨迹上下文。
+2. *用人类轨迹做少样本提示*: 在 prompt 里放 1-6 条“人怎么想+怎么做+看到了什么”的示例，让冻结的 LLM 学会在当前任务里复现这种交织模式。
+3. *按任务选择思考密度*: 知识推理任务用“密集 thought-action-observation 交替”；长序列交互任务让 thought 稀疏出现，只在关键分岔/子目标处出现。
+
+* DELTA
+
+*vs SOTA*:
+- HotpotQA(EM): ReAct 27.4 > Act 25.7，但略低于 CoT 29.4；把内部知识与外部检索结合后更强：ReAct -> CoT-SC 35.1。
+- FEVER(Acc): ReAct 60.9 > CoT 56.3、> Act 58.9；并且 CoT-SC -> ReAct 达到 64.6。
+- ALFWorld(SR): ReAct(best of 6) 71% vs Act(best of 6) 45% vs BUTLER 37%。
+- WebShop: ReAct SR 40.0 vs Act SR 30.1（绝对 +9.9）；Score 66.6 vs 62.3。
+
+*新拼图*:
+- 不是“再发明一个更强的检索器/策略网络”，而是把 *推理痕迹* 和 *可执行动作* 融合为同一条可读轨迹：既能用外部环境当“事实校验器/信息源”，又能把高层计划写出来当“工作记忆”。
+- 解释性提升是结构性的：人能区分“模型自己想出来的”与“从外部查到的”，更容易定位错误来源（推理错？检索错？动作错？）。
+
+* CRITIQUE
+
+*隐形假设*:
+- 需要一个“可语言化、可控、反馈稳定”的工具/环境接口；真实网页/真实软件往往噪声大、解析难、动作空间更大，ReAct 的 prompt 轨迹很容易被环境细节吞掉上下文预算。
+- 少样本效果强依赖示例轨迹写法（thought 的风格、粒度、何时出现），这在不同团队/不同任务上可复现性不一定稳。
+- 主要使用贪心解码；论文里已观察到 ReAct 可能陷入重复 thought/action 的回路，说明“结构约束”也会带来灵活性损失。
+
+*未解之谜*:
+- 如何系统化地决定“何时想/何时做/想多长”，而不是靠示例和启发式？
+- 与更强的检索器、工具编排、或训练式方法(RL/finetune)结合后，ReAct 的优势会如何变化、是否仍然是主要瓶颈？
+- 安全与对齐：把 LLM 接到外部世界的动作接口后，如何约束其信息获取与行为边界，在开放环境里避免隐私/危险操作？
+
+* LOGIC FLOW
+
+#+begin_example
+Problem: ungrounded reasoning OR blind acting
+   |
+   v
+Insight: humans interleave "think" and "do"
+   |
+   v
+Method (ReAct):
+  - add THOUGHT as an action
+  - interleave THOUGHT / ACTION / OBS in one text context
+  - few-shot with human trajectories
+   |
+   v
+Results:
+  - less hallucination (act-to-reason)
+  - better planning/state tracking (reason-to-act)
+  - improved success rates + interpretability
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
+         +-------------------+
+         |        LLM        |
+         |  (prompt + ctx)   |
+         +-------------------+
+             |        ^
+      THOUGHT|        |OBS (text)
+             v        |
+   ctx = ctx + THOUGHT|
+             |        |
+             |ACTION  |
+             v        |
+         +-------------------+
+         |   Tool / Env      |
+         | (Wiki, game, web) |
+         +-------------------+
+#+end_example
+

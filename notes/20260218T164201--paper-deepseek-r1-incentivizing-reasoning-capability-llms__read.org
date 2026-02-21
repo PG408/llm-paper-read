@@ -1,0 +1,146 @@
+#+title:      paper-deepseek-r1-incentivizing-reasoning-capability-llms
+#+date:       [2026-02-18 Wed 16:42]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260218T164201
+#+source:     https://ar5iv.labs.arxiv.org/html/2501.12948
+#+authors:    DeepSeek-AI et al.
+#+venue:      arXiv:2501.12948v2 (journal_ref: Nature 645:633-638, 2025)
+
+* PLAIN TALK
+
+以前要让大模型“会推理”，常见做法是喂大量人工写的“解题步骤示范”，但这类数据贵、也很难覆盖更难的题。本文展示了一条更直接的路:只在那些能自动判对错的任务上给奖励，让模型用强化学习自己摸索出更有效的思考方式（例如自我检查、反思、愿意多想一会儿）。随后再用少量“可读的冷启动数据”和多阶段训练把可读性与通用对话能力补齐，并把大模型学到的推理模式蒸馏给小模型。
+
+* LANDSCAPE
+
+#+begin_example
+2017  AlphaGo/AlphaZero line: RL + search -> complex skill emerges
+  |
+2022  CoT prompting: show human-written steps -> big gains, but needs demos
+  |
+2022-2023  PRM (process reward model): step-wise reward -> hard to define/label
+  |
+2024  OpenAI o1: inference-time scaling via longer CoT -> strong, recipe not open
+  |
+2024  GRPO: cheaper LLM RL (no critic; group-relative baseline)
+  |
+2025/2026  DeepSeek-R1 [*THIS*]
+  |  -> pure RL on verifiable tasks + small cold start + distill to small models
+  |  -> limitation: needs rule-evaluable tasks; readability/lang-mix; prompt sensitive
+#+end_example
+
+* NAPKIN FORMULA
+
+#+begin_example
++-----------------------------------------------------------------------+
+| R1 = BaseLLM                                                          |
+|    + RL(verifiable_tasks, reward = accuracy_rule + format + language) |
+|    + small_cold_start_SFT(readable_CoT + summary)                     |
+|    + iterate( rejection_sample -> SFT -> RL_align_helpful_safe )      |
+|    + distill_to_small_models(SFT_only)                                |
++-----------------------------------------------------------------------+
+#+end_example
+
+含义:BaseLLM 是底座模型（文中为 DeepSeek-V3-Base）；RL 是“用奖励信号改写输出策略”的训练；verifiable_tasks 指能用规则判对错的任务（数学/代码等）；SFT 是“用标注样本做监督微调”；distill 是“让大模型当老师产出训练样本，小模型用这些样本学习”。
+
+* PROBLEM
+
+*痛点定义*: 如何在几乎不依赖人工推理示范的情况下，让 LLM 在数学/代码/STEM 等可验证任务上学会“更可靠、更长程的思考策略”。
+
+*前人困境*:
+- 纯 SFT/CoT 示范:强依赖人工轨迹，成本高，覆盖有限，且容易学到“像在推理”而不是“真的推对”。
+- PRM/逐步奖励:需要定义细粒度步骤并判中间步骤对错，规模化标注困难，还可能被奖励黑客攻击。
+- 搜索/MCTS:token 级搜索空间爆炸，强依赖细粒度价值模型，迭代自我提升难稳定放大。
+
+* INSIGHT
+
+*核心直觉*: 在“能自动验真”的任务里，只要奖励函数站得住（对就奖、错就罚，再加一点格式约束），模型会自己发明更有效的推理策略；而“读起来像人话”和“通用对话能力”可以用少量人类先验（冷启动 + 摘要）与后续对齐阶段补上。
+
+*关键步骤*:
+1. 用 *GRPO* 做大规模 RL:一种省掉 critic 的 PPO 变体，对同一题采样一组答案，用“组内相对好坏”当基线来更新策略，并用 KL 约束避免漂移过大。
+2. 用 *规则奖励* 训练 DeepSeek-R1-Zero:主要奖励来自“是否答对”（可规则校验）与“输出格式”（强制把思考放进 <think>...</think>），尽量不引入神经奖励以降低 reward hacking 风险。
+3. 用 *多阶段管线* 训练 DeepSeek-R1:先用少量冷启动长 CoT 数据让输出更可读（reasoning + summary），再做面向推理的 RL；随后用拒绝采样生成约 600k 推理样本 + 200k 通用样本做 SFT；最后再做一次全场景 RL 对齐 helpful/harmless，并把推理数据蒸馏到 Qwen/Llama 系小模型。
+
+* DELTA
+
+*vs SOTA*:
+- 纯 RL 的 *R1-Zero*:AIME 2024 的 pass@1 从 15.6% 提升到 71.0%，用 64 次采样多数投票（cons@64）到 86.7%，接近/超过 o1-0912。
+- *R1* （冷启动 + 多阶段）:AIME 2024 pass@1 79.8%，MATH-500 pass@1 97.3%，在多项推理与代码基准上逼近 o1-1217，并显著强于同底座的 DeepSeek-V3。
+- *蒸馏小模型*:仅用 SFT 的 Distill-Qwen-7B 在 AIME 2024 上达 55.5%，Distill-Qwen-32B 达 72.6%，显示“大模型学到的推理模式”可以较便宜地下放到小模型。
+
+*新拼图*:
+- 以开源形态明确展示:LLM 的推理能力可以在不靠大量 SFT 示范的情况下，通过“可验证任务 + 强化学习”被激励出来，并自然出现反思/自检/延长思考等行为。
+- 给出一条可复用的工程化路线:纯 RL 探索推理策略 + 小规模人类先验修正可读性 + 迭代式数据生成/SFT + 最终偏好与安全对齐 + 蒸馏扩散到小模型。
+
+* CRITIQUE
+
+*隐形假设*:
+- *奖励可验真*:核心增益来自可规则判对错的任务；一旦进入开放式问题，只能依赖神经奖励/偏好模型，reward hacking 风险与成本会迅速上升（文中也把这当作 PRM 的主要问题之一）。
+- *“更长 CoT”可承受*:能力提升部分来自更长的思考过程，本质是把算力/时延搬到推理端；在真实产品里会直接碰到延迟与成本约束。
+- *模板/提示词足够稳定*:文中指出 few-shot 会显著降性能，要求用户用 zero-shot 明确描述任务与格式；这意味着能力并非对提示完全鲁棒。
+- *安全对齐的副作用可接受*:安全 RL 会带来“更常拒答”，并在中文事实问答上造成可观的准确率损失（文中提到去掉安全 RL 可显著提高 C-SimpleQA）。
+
+*未解之谜*:
+- 如何把“纯 RL 激励推理”的框架推广到不可规则验证的任务（例如开放式研究/写作），同时避免奖励模型驱动的投机与幻觉式 CoT。
+- 如何让软件工程类任务更充分受益于 RL（文中承认评测耗时限制了大规模 RL 的覆盖），以及如何系统化做异步/更快的可验证评测。
+- 多语言下的语言混杂、以及“思考文本”与真实推理过程的一致性（<think> 约束更像可读性格式，而非真实性保证）如何被更严格地定义与评估。
+
+* LOGIC FLOW
+
+#+begin_example
+[Base: DeepSeek-V3-Base (MoE)]
+        |
+        +--> Path A: DeepSeek-R1-Zero
+        |      |
+        |      v
+        |   [RL via GRPO + rule rewards]
+        |      |
+        |      v
+        |   [Emergent long CoT, reflection, verification]
+        |      |
+        |      v
+        |   [Issue: unreadable + language mixing]
+        |
+        +--> Path B: DeepSeek-R1 (user-friendly)
+               |
+               v
+        [Cold-start SFT: readable CoT + summary]
+               |
+               v
+        [Reasoning RL: accuracy + language-consistency reward]
+               |
+               v
+        [Rejection sampling -> 600k reasoning + 200k general]
+               |
+               v
+        [SFT on ~800k]
+               |
+               v
+        [RL align helpful + harmless (preference reward)]
+               |
+               v
+              [R1]
+               |
+               v
+        [Distill to dense models (SFT only): 1.5B..70B]
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
+q (one question)
+  |
+  v
+sample G answers from old policy
+  |
+  +--> o1 -> reward r1  \
+  +--> o2 -> reward r2   \
+  +--> ..                 >  compute relative advantage:
+  +--> oG -> reward rG   /     Ai = (ri - mean(r)) / std(r)
+  |
+  v
+update policy to prefer above-average answers
+  |
+  v
+add KL-to-reference penalty to avoid drifting too far
+#+end_example
+

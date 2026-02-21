@@ -1,0 +1,156 @@
+#+title:      paper-switch-transformers-trillion-sparsity
+#+date:       [2026-02-20 Fri 14:18]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260220T141812
+#+source:     https://ar5iv.labs.arxiv.org/html/2101.03961
+#+authors:    William Fedus, Barret Zoph, Noam Shazeer
+#+venue:      JMLR
+
+* PLAIN TALK
+
+想把语言模型做得更强，常见办法是把参数堆大，但这会把训练算力成本一起堆上去。Switch Transformer 的做法是: 每个 token 只“调用”一小块参数（一个专家），让 *总参数* 可以暴涨到万亿级，但 *每个 token 的计算量* 基本不变。论文同时把过去 MoE（Mixture-of-Experts，专家混合）里最容易翻车的训练不稳定和通信开销，用更简单的路由 + 一组工程化训练技巧压下去。
+
+* LANDSCAPE
+
+#+begin_example
+1991-1994  Classic MoE (Jacobs; Jordan&Jacobs)
+  |   gating network selects experts
+  |
+2017  Sparsely-Gated MoE in Transformers (Shazeer et al.)
+  |   [TURN] conditional computation: params up, FLOPs/token ~ const
+  |
+2019  T5 (Raffel et al.) -> strong dense pretraining + finetune baseline
+  |
+2020  Scaling laws (Kaplan) + large MoE MT (Lepikhin/GShard)
+  |   MoE works, but routing/comm/all-to-all + instability blocks adoption
+  |
+2021-2022  Switch Transformer [*THIS*] <===
+  |   key pivot: top-1 routing (k=1) instead of top-2/ top-k
+  |   training fixes: selective fp32 in router + smaller init + expert dropout
+  |   limitation: still needs load balance/capacity; may drop tokens; all-to-all cost
+#+end_example
+
+* NAPKIN FORMULA
+
+#+begin_example
++-----------------------------------------------------------+
+|                                                           |
+|   Params_total ~= P_dense + N * P_expert                  |
+|   FLOPs/token  ~= F_dense + 1 * F_expert   (top-1 Switch) |
+|                                                           |
++-----------------------------------------------------------+
+#+end_example
+
+含义: 把 Transformer 里最“吃参数”的 FFN（前馈网络）拆成 N 个 *专家* （expert），总参数按 N 线性增长（P_expert 是单个专家的参数量），但每个 token 训练/推理时只激活 1 个专家，所以每个 token 的计算量基本还是“主干 + 一个专家”（F_expert 是单个专家的计算量）。代价是: 需要一个 *路由器* （router）决定“这个 token 去哪个专家”，并且要付出一定的跨设备 all-to-all 通信成本。
+
+* PROBLEM
+
+*痛点定义*: 在 *不把每个 token 的 FLOPs 一起拉爆* 的前提下，把模型的“可用参数量”大幅做大，从而更快达到同等损失/更好效果。
+
+*前人困境*:
+- 纯 dense 扩参: 参数上去 = FLOPs/token 也上去，训练速度被算力硬卡住。
+- 传统 MoE: 虽然“总参数大、每个样本只算一部分”，但落地很难——路由要选多个专家（top-k）、通信开销大、负载不均导致部分专家爆仓（overflow）和训练不稳定；甚至要被迫用 float32 才稳，速度又掉下去。
+
+* INSIGHT
+
+*核心直觉*: 让“学习路由”这件事 *足够简单* ——每个 token 只选 1 个专家（top-1），把复杂性从“算法花活”改成“可控的工程约束”（容量、负载均衡、局部高精度）。
+
+*关键步骤*:
+1. *Switch (top-1) routing*: 对 token 表示 x 做一次线性打分 + softmax 得到每个专家概率 p(i|x)，只取 argmax 的那个专家执行 FFN；输出再乘上对应 gate 值，保证路由器仍可反传（因为 p(i|x) 是可导的）。
+2. *容量(capacity) + 丢 token(dropped tokens) 的硬约束*: 每个专家每个 batch 只处理固定上限 C（由“tokens/batch / experts * capacity_factor”给出）；超出的 token 直接跳过专家计算，走残差传到下一层。这样可以静态 shape（TPU 友好），但必须把 dropped tokens 压到很低（论文经验上通常 <1%）。
+3. *负载均衡辅助损失(load balancing loss)*: 额外加一个 loss，让每个专家收到的 token 数 f_i 和路由器分给该专家的概率质量 P_i 都趋向 1/N，避免“少数专家吃满、其余闲置”的塌缩。
+4. *把不稳定集中在 router 内部修掉*: (a) *selective precision*: router 内部局部用 float32 算（尤其 softmax/dispatch），结束后再 cast 回 bfloat16，避免全局 float32 通信；(b) *更小初始化*: 把默认初始化尺度缩小 10 倍显著降早期方差；(c) *expert dropout*: 微调时只在专家内部把 dropout 拉大，抑制稀疏模型在小数据任务上过拟合。
+
+* DELTA
+
+*vs SOTA*:
+- *更简单的 MoE*: 用 top-1 取代 top-k，路由计算更轻、每 token 的专家容量需求至少减半、跨设备通信更省，工程实现显著简化。
+- *更稳的训练配方*: 用“router 局部 float32 + 小初始化 + 专家内 dropout”把 MoE 常见的数值不稳定、bfloat16 训练困难和微调过拟合压住。
+- *可观的墙钟收益*: 在 FLOPs/token 匹配的前提下，增加专家数能显著提升样本效率/时间效率（论文报告在 C4 上可达 7x+ 预训练速度提升；在更大规模上可到万亿参数，并相对强 T5-XXL 基线有 4x 速度收益）。
+- *可迁移到多语言/蒸馏*: 多语言 101 个语言上基本“普涨”，并能把大稀疏教师蒸馏成小 dense 学生，极大缩小部署体积，同时保留一部分质量收益。
+
+*新拼图*:
+- 把“规模”拆成另一条轴: 除了“每 token 算更多”，还可以“每 token 算一样多，但可用参数更多”（conditional computation）。
+- 给了一个可复用的工程范式: MoE 不是玄学，关键是把*路由、容量、负载均衡、精度*这四个系统问题当成一等公民处理。
+
+* CRITIQUE
+
+*隐形假设*:
+- *负载均衡可控*: 需要足够大的 batch/tokens 让路由器能“平均分流”，并且辅助损失系数与 capacity_factor 要调到位；否则就会出现专家塌缩、dropped tokens 上升、训练不稳或质量掉。
+- *通信/硬件条件*: 专家并行依赖 all-to-all，把参数分布在多设备上；互联带宽/拓扑如果跟不上，墙钟收益会被通信吃掉（尤其是规模更大时）。
+- *丢 token 伤害可忽略*: 论文倾向把 dropped tokens 压到很低并认为影响可控，但这其实是一个“边界条件”——一旦分布偏斜或任务更敏感，跳过专家计算可能带来不可预期的性能损失。
+
+*未解之谜*:
+- *更好的“无丢 token”容量机制*: Appendix B 提了 No-Token-Left-Behind 的方向，但如何在静态 shape/高吞吐下彻底消除 dropped tokens，仍是系统与算法的结合问题。
+- *路由的泛化与可解释性*: 专家到底学到“按语义分工”还是“按频率/表面模式分工”？路由器在分布迁移/长尾语言上是否会偏置到少数专家？
+- *服务端推理的最优形态*: 训练时 all-to-all 可以靠大集群吞吐摊薄，但在线推理的延迟、缓存、批处理策略、专家放置策略如何设计，才能把“参数大”变成“实际好用”？
+
+* LOGIC FLOW
+
+#+begin_example
++---------------------------+
+| token hidden state x      |
++---------------------------+
+            |
+            v
++---------------------------+
+| router                    |
+| - logits = W_r x          |
+| - p = softmax(logits)     |
+| - e = argmax p            |
++---------------------------+
+            |
+            v
++---------------------------+
+| dispatch (all-to-all)     |
+| - send x to expert e      |
+| - capacity C; may drop    |
++---------------------------+
+            |
+            v
++---------------------------+
+| compute                   |
+| - y_e = FFN_e(x)          |
+| - only 1 expert active    |
++---------------------------+
+            |
+            v
++---------------------------+
+| combine + residual        |
+| - y = gate * y_e          |
+| - pass to next layer      |
++---------------------------+
+            |
+            v
++---------------------------+
+| training stabilizers      |
+| - load balance loss       |
+| - selective fp32 router   |
+| - smaller init scale      |
+| - expert dropout (FT)     |
++---------------------------+
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
+Goal: scale Params without scaling FLOPs/token
+
+tokens in a batch
+[ t1 t2 t3 t4 t5 t6 t7 t8 ... ]
+          |
+          v
+    +----- router (top-1) -----+
+    |                          |
+    v                          v
++-----------+  +-----------+  +-----------+    ...  +-----------+
+| expert 1  |  | expert 2  |  | expert 3  |         | expert N  |
+| cap = C   |  | cap = C   |  | cap = C   |         | cap = C   |
++-----------+  +-----------+  +-----------+         +-----------+
+     ^              ^              ^                     ^
+     |              |              |                     |
+ (overflow -> dropped tokens -> residual pass-through)
+
+aux loss pushes: tokens/expert ~ uniform, prob mass/expert ~ uniform
+#+end_example
+

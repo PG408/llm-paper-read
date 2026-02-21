@@ -1,0 +1,119 @@
+#+title:      paper-training-compute-optimal-large-language-models
+#+date:       [2026-02-15 Sun 15:34]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260215T153458
+#+source:     https://ar5iv.labs.arxiv.org/html/2203.15556
+#+authors:    Jordan Hoffmann; Sebastian Borgeaud; Arthur Mensch; Elena Buchatskaya; Trevor Cai; Eliza Rutherford; Diego de Las Casas; Lisa Anne Hendricks; Johannes Welbl; Aidan Clark; Tom Hennigan; Eric Noland; George van den Driessche; Bogdan Damoc; Jean-Baptiste Alayrac; Laurent Sifre; Oriol Vinyals; Llia Elizarov; Jack W. Rae; Erich Elsen; Koray Kavukcuoglu; Jonah Wexler
+#+venue:      arXiv:2203.15556v1, 2022-03-29
+
+* PLAIN TALK
+
+这篇论文在解决一个“怎么算都亏”的训练问题：算力预算固定时，我到底该砸钱堆更大模型，还是该喂更多文本、把模型训更久，才能最划算地变强？
+作者发现：很多当时的顶级大模型其实是“参数很大但训练 token 不够”，同等算力下，用更小的模型配更多 token 往往更省且更强。
+他们给出一条工程配方：在算力最优的情况下，模型参数量和训练 token 数应该差不多一起增长（粗略地说 D ~ N）。
+
+* LANDSCAPE
+
+#+begin_example
+Timeline (compute-optimal LLM training)
+
+2017  Transformer
+2020  Kaplan et al. scaling laws
+      <== turning point: "compute-optimal" suggests very large N, relatively small D
+2020  GPT-3 (175B)
+      <== turning point: scaling works, but many models train on too few tokens per parameter
+2021  Gopher (280B)
+      <== strong baseline, later evidence suggests it is undertrained
+2022  [*THIS*] Chinchilla (70B, 1.4T tokens)
+      <== turning point: undertraining is common; compute-opt shifts toward much larger D
+      Limitation: dense Transformer + (mostly) <=1 epoch; ignores MoE/retrieval/system bottlenecks
+#+end_example
+
+* NAPKIN FORMULA
+
+#+begin_example
++--------------------------------------------------------------+
+|  Compute budget (training):  C ~= k * N * D                  |
+|                                                              |
+|  Compute-optimal frontier (Chinchilla, empirical fit):       |
+|    N_opt ~= a * C^0.50                                       |
+|    D_opt ~= b * C^0.50                                       |
+|                                                              |
+|  Rule of thumb: for each 2x in N, also ~2x in D (D ~ N).     |
+|  Contrast (Kaplan 2020): N~C^0.73, D~C^0.27                  |
++--------------------------------------------------------------+
+#+end_example
+
+其中 C 是训练总算力预算（可近似理解为训练 FLOPs 的数量级）；N 是模型参数量（更严格时常指 non-embedding parameters）；D 是训练 token 总数；k/a/b 是由实验拟合得到的常数；N_opt/D_opt 是在给定 C 下的“算力最优”选择。
+这条配方的直觉是：既然训练算力大体按 N*D 增长，那么在最优点上不要把预算几乎全砸到 N 上，而是让 N 和 D 一起长，这样同等算力下通常能得到更低的语言建模损失和更强的下游表现。
+
+* PROBLEM
+
+*痛点定义*: 训练大语言模型时，算力是硬约束；但 N（参数量）和 D（训练 token）怎么配比才能“最划算”，没有可靠工程法则，导致很多模型在固定算力下被“训练不够”。
+
+*前人困境*: 直觉上“更大更好”，于是工程上常常先把 N 推到极限再考虑 D；但如果真实最优点需要更多 D，那么这种策略会造成两件坏事：训练算力被浪费在“过大的参数”上，且下游能力可能不如“更小但更充分训练”的模型。
+
+* INSIGHT
+
+*核心直觉*: 把“预算分配”当成可测量的优化问题：在固定训练设定下系统扫一圈 (N, D)，画出同算力曲线（isoFLOP profiles）和损失面，再从这些经验曲线中直接读出算力最优前沿 (N_opt, D_opt)。
+
+*关键步骤*:
+1. *大规模扫参而非单点训大*: 训练数百个不同 N 和 D 的模型，用统一流程测 held-out loss，避免被单个大模型的偶然性误导。
+2. *用多种拟合/推断方法交叉验证最优点*: 通过最小化训练曲线、isoFLOP 轮廓、参数化损失模型等方式估计 N_opt/D_opt，并检查它们是否一致。
+3. *用一条“实战模型”做验证闭环*: 按推断出的最优点训练 Chinchilla（70B 参数、1.4T tokens），用同等算力对比更大参数的强基线，验证“更小但更久训练”确实更强。
+
+* DELTA
+
+*vs SOTA*: 在相近训练算力下，Chinchilla（70B）用更多 token 训练，综合基准（如 MMLU）显著超过 Gopher（280B）等更大模型，且论文报告 MMLU 达到约 67.5%，相对 Gopher 有超过 7 个百分点提升。
+
+*新拼图*: 把“模型没训够”从模糊抱怨变成可操作的配方：很多历史模型更像是落在“undertrained”区域（N 太大、D 太小），未来扩规模时，数据规模与训练时长本身会成为第一工程瓶颈，而不是只看参数量上限。
+
+* CRITIQUE
+
+*隐形假设*:
+- *训练数据足够且质量稳定*: 规则依赖“你能拿到足够多、足够干净的 tokens”；若靠重复同一批数据多轮（>1 epoch），最优点可能移动，且过拟合/污染风险上升。
+- *算力估算的简化足够好*: 用 C ~= k*N*D 描述训练成本会忽略序列长度、优化器/激活开销、并行通信与 I/O 等系统瓶颈；真实系统里最优点可能因工程约束偏移。
+- *适用范围主要是 dense Transformer*: MoE、检索增强、长上下文等架构改变了“参数 vs tokens”的边际收益结构，这条配方未必直接可迁移。
+
+*未解之谜*:
+- *是否跨目标一致*: 语言建模损失的最优配方，是否也是对齐/RLHF、指令跟随、推理能力等目标的最优配方？
+- *评测泄漏与数据污染*: 训练数据扩大后更容易包含评测材料或近似内容，如何系统地衡量并剥离“数据泄漏带来的虚高”仍是难题。
+- *为什么指数接近 0.5*: 论文给出强经验规律，但缺少能解释该幂律指数的机制性理论。
+
+* LOGIC FLOW
+
+#+begin_example
+[Goal] fixed compute budget C -> minimize held-out loss / maximize downstream scores
+   |
+   v
+[Sweep] train many models across (N, D) with controlled training setup
+   |
+   v
+[Fit] build loss model + isoFLOP curves -> locate compute-optimal (N_opt, D_opt)
+   |
+   v
+[Predict] "D should scale with N" on the compute-opt frontier
+   |
+   v
+[Validate] train Chinchilla at (N=70B, D=1.4T) -> evaluate vs larger baselines
+   |
+   v
+[Outcome] better quality at similar training compute; smaller model helps inference too
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
+D (tokens)
+^
+|                 overtrained (too much D for N)
+|                    .
+|                  .
+|                .
+|              *   compute-opt frontier (roughly D ~ N)
+|            .
+|          .
+|  undertrained .
++-----------------------------------------------> N (params)
+      GPT-3 / Gopher                Chinchilla
+#+end_example

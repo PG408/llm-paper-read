@@ -1,0 +1,147 @@
+#+title:      paper-scaling-monosemanticity-interpretable-features-sonnet
+#+date:       [2026-02-21 Sat 17:35]
+#+filetags:   :read:xray:paper:
+#+identifier: 20260221T173528
+#+source:     https://transformer-circuits.pub/2024/scaling-monosemanticity/
+#+authors:    Adly Templeton, Tom Conerly, Jonathan Marcus, Jack Lindsey, Trenton Bricken, Brian Chen, Adam Pearce, Craig Citro, Emmanuel Ameisen, Andy Jones, Hoagy Cunningham, Nicholas L Turner, Callum McDougall, Monte MacDiarmid, Alex Tamkin, Esin Durmus, Tristan Hume, Francesco Mosconi, C. Daniel Freeman, Theodore R. Sumers, Edward Rees, Joshua Batson, Adam Jermyn, Shan Carter, Chris Olah, Tom Henighan
+#+venue:      Transformer Circuits (Anthropic)
+
+* PLAIN TALK
+
+这篇文章想解决一个“看不懂大模型在想什么”的问题：模型脑子里很多概念混在一起，我们很难指着某一块说“它就在做这件事”。作者用一种“字典”把 Claude 3 Sonnet 中间某一层的内部向量拆成一堆稀疏的小开关，很多开关能被清楚命名（地点、人、代码错误、奉承、欺骗等）。更关键的是，手动把某些开关调高/调低，会稳定改变模型输出，说明这些开关不只是“看起来像”，而是参与了模型行为。
+
+* LANDSCAPE
+
+#+begin_example
+2013  Word embeddings show linear directions (king - man + woman ~ queen)
+  |
+2019  [TURN] Circuits/feature visualization mindset: mechanisms, not just metrics
+  |
+2022  [TURN] Toy Models of Superposition (Anthropic): many concepts packed into few dims
+  |
+2023  [TURN] Towards Monosemanticity: SAEs extract monosemantic features (small/toy LMs)
+  |
+2024-04  SAE training update: better objectives + infra for larger runs
+  |
+2024-05  Scaling Monosemanticity (Claude 3 Sonnet) [*THIS*]
+  |        -> scale dictionary learning to production model; millions of features
+  |        -> show steering/attribution/safety-relevant features at scale
+  |        -> limitation: proxy loss != interpretability; many dead features; proprietary model
+  |
+Next  Feature-based circuit analysis + evaluation + safety cases
+#+end_example
+
+* NAPKIN FORMULA
+
+#+begin_example
++-----------------------------------------------------------+
+|                                                           |
+|   residual ~= bias + SUM_i (strength_i * direction_i)     |
+|                                                           |
++-----------------------------------------------------------+
+#+end_example
+
+含义：把模型某层的内部向量（residual stream 的一个向量）近似写成“少量方向”的加权和；direction_i 是字典里第 i 个“特征方向”，strength_i 是它在当前 token 上的强度。稀疏性意味着每个 token 只需要点亮很少几个方向，因此更容易被人类命名和干预。
+
+* PROBLEM
+
+*痛点定义*: 如何把大语言模型的内部表示拆成可命名、可检验、可干预的“概念/计算单元”，而不是一团混合的神经元活动。
+
+*前人困境*: 
+- 神经元往往是多义的（polysemantic），同一个神经元在不同上下文里代表不同东西，难以解释和复用。
+- 早期 SAE/字典学习多在小模型上成功；能否扩到现代生产级模型，既有工程不确定性，也有方法论不确定性（训练目标只是可解释性的代理）。
+- 即便找到“看起来像”的特征，也缺少因果证据：它是否真的在驱动输出，而不只是相关。
+
+* INSIGHT
+
+*核心直觉*: 假设模型把概念表示为高维空间里的方向（linear representation hypothesis），并且会把很多方向“塞”进同一组维度里（superposition）。那就用稀疏自编码器（SAE: 一种稀疏字典学习方法）在激活空间里学出一组过完备的“方向字典”，让每个 token 的激活用少量特征方向来解释；再用干预与归因去验证这些特征是否参与计算。
+
+*关键步骤*:
+1. 选取 Claude 3 Sonnet 的中间层 residual stream 作为对象（成本更低，也试图缓解 cross-layer superposition），收集激活并做归一化。
+2. 训练过完备 SAE（1M/4M/34M 个特征），用“重建误差 + 稀疏惩罚”优化；稀疏项按 decoder 向量范数加权，避免通过缩小特征强度/放大 decoder 来“作弊”。
+3. 用 scaling laws 把计算预算在“特征数 vs 训练步数”之间做近似最优分配，并外推学习率随算力变化的趋势。
+4. 解释与验证特征：
+   - 可视化 top-activating 片段 + 自动解释（给特征生成类似“变量名”的描述）。
+   - 因果测试：feature steering（clamp 特征强到正/负）观察输出变化；以及 feature attribution/ablation 识别对 next-token 真正关键的特征。
+
+* DELTA
+
+*vs SOTA*:  
+- 把 SAE 从小模型推进到 Claude 3 Sonnet 的中间层 residual stream，训练到百万/千万级特征规模；每个 token 平均点亮的特征少于 300 个，重建解释了 65% 以上激活方差。
+- 给出工程上可操作的 scaling laws 视角：在给定算力下，特征数与训练步数的 compute-optimal 分配呈幂律趋势。
+- 证明“特征比神经元更可解释”：随机抽样下，82% 的特征与任一单个神经元的相关系数最高也不超过 0.3；自动解释评估显示特征整体更具体、更可预测。
+
+*新拼图*:  
+- 展示“抽象且可因果操控”的特征存在：例如代码错误特征会在多语言代码里的错误模式上激活；clamp 后能诱导模型编造报错、或在特定提示下改写/修复 bug。
+- 把特征用于“看中间计算”：用 attribution/ablation 找到情绪推断、多步事实链条（Kobe -> California -> capital -> Sacramento）中的关键中间量特征；归因与消融效应相关性约 0.8，明显强于“仅看激活大小”。
+- 把“找特征”做成方法：单 prompt、多 prompt 交集+负样本过滤、训练线性分类器、几何近邻（cosine similarity）、以及按 logit 差异归因筛选。
+- 给出“特征覆盖率”与数据频率的关系：概念越常见越容易在字典里出现；大致需要 alive_features 数量量级与概念频率匹配（阈值接近 1 / alive_features），暗示想抓极稀有概念可能需要十亿级特征字典。
+- 把安全相关概念“变成旋钮”：找到不安全代码、偏见、奉承、隐瞒/诚实等特征，并展示 clamping 会显著改变行为；甚至可在一个“假装遗忘”的提示里，通过点亮“内心冲突/诚实”特征让模型承认做不到并给出真实解释。
+
+* CRITIQUE
+
+*隐形假设*:
+- 线性表示与 superposition 假设足够接近真相；否则 SAE 学到的方向可能只是某种方便的投影，而非“概念单元”。
+- 训练 loss（重建+稀疏）是可解释性的好代理，但作者也承认缺少 ground truth objective，可能出现“看起来干净”的错觉或 messy feature splitting。
+- 自动解释与自动评估依赖另一个大模型（如 Claude 3 Opus）充当裁判，存在偏置与自洽幻觉的风险。
+- 只看中间层 residual stream 可能错过跨层电路；同时 34M SAE 的 dead features 比例很高（约 65%），表明训练过程与容量利用仍不理想。
+
+*未解之谜*:
+- 该怎样定义并度量“可解释性”的真正目标函数，避免只是在优化代理指标。
+- 如何降低 dead features、减少 shrinkage/分裂问题，并把特征稳定对齐到更细粒度的“电路”（circuits）。
+- 特征能否在分布外场景里可靠地做安全检测/阻断（不仅能“找到并操控”，还要能“稳定泛化并可用”）。
+- 如何系统化地探索上千万特征空间（搜索、聚类、命名、验证的闭环自动化）。
+
+* LOGIC FLOW
+
+#+begin_example
+[Goal: understand what Sonnet "uses" internally]
+        |
+        v
+[Collect mid-layer residual activations (text)]
+        |
+        v
+[Train SAE: overcomplete + sparse + recon loss]
+        |
+        v
+[Get feature directions + sparse feature activations]
+        |
+        +--> [Interpret: top activations + automated labels]
+        |
+        +--> [Test causality: steering (clamp) + ablation]
+        |
+        +--> [Explain computation: attribution -> key intermediates]
+        |
+        v
+[Applications: survey, search, safety-relevant knobs]
+#+end_example
+
+* NAPKIN SKETCH
+
+#+begin_example
+model residual x (D dims)
+        |
+        v
++------------------------+
+| SAE encoder (Wenc)     |
+| linear -> ReLU         |
+| + sparsity pressure    |
++------------------------+
+        |
+        v
+ sparse features f (F dims, few nonzero)
+        |
+        v
++------------------------+
+| SAE decoder (Wdec)     |
+| SUM_i f_i * direction_i|
++------------------------+
+        |
+        v
+reconstruction x_hat
+
+Use the dictionary:
+  - name features (interpretability)
+  - clamp features (steering)
+  - attribute/ablate features (causal tests)
+#+end_example
