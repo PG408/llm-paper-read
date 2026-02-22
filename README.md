@@ -285,34 +285,34 @@ Pos 2025    LLMs become an end-to-end system problem
 
 ## INDEX
 
-| 标签 | 标题（含 venue/年份信息） | 一句话 takeaway | 链接 |
-| --- | --- | --- | --- |
-| 基座/预训练 | Attention Is All You Need (NeurIPS 2017) | 用纯自注意力替代 RNN/CNN，提速提质，奠定 Transformer 基座。 | [note][n_aiayn] · [source][s_aiayn] |
-| 基座/预训练 | BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding (NAACL-HLT 2019) | 掩码词预测+句间关系预训练，统一 encoder 微调并刷新理解基准。 | [note][n_bert] · [source][s_bert] |
-| 基座/预训练 | Language Models are Unsupervised Multitask Learners (OpenAI Technical Report, 2019) | 扩大 LM 规模+更干净数据，纯下一个词预测也能免微调跨任务。 | [note][n_gpt2] · [source][s_gpt2] |
-| 基座/预训练 | Language Models are Few-Shot Learners (arXiv 2020) | 把模型做大后，靠提示+少量示例零微调做新任务，暴露推理与事实短板。 | [note][n_gpt3] · [source][s_gpt3] |
-| 基座/预训练 | LLaMA: Open and Efficient Foundation Language Models (arXiv 2023) | 只用公开数据长训练小模型，用更低推理成本逼近/超过更大闭源模型。 | [note][n_llama] · [source][s_llama] |
-| 基座/预训练 | Qwen3 Technical Report (arXiv 2025) | 同一模型内置 /think 与 /no_think 开关，用思考预算在延迟与能力间折中。 | [note][n_qwen3] · [source][s_qwen3] |
-| 规模/算力 | Scaling Laws for Neural Language Models (arXiv 2020) | 损失随参数/数据/算力呈稳定幂律，用公式做预算分配且不必训到收敛。 | [note][n_kaplan] · [source][s_kaplan] |
-| 规模/算力 | Training Compute-Optimal Large Language Models (arXiv 2022) | 指出大量大模型训练 tokens 不足；在固定算力下，更小模型配合更多 tokens 通常更具算力效率。 | [note][n_chinchilla] · [source][s_chinchilla] |
-| 规模/算力 | PaLM: Scaling Language Modeling with Pathways (arXiv 2022) | 用 Pathways 高效训稳 540B PaLM，并在部分任务上观察到规模跃迁。 | [note][n_palm] · [source][s_palm] |
-| 训练/效率 | RoFormer: Enhanced Transformer with Rotary Position Embedding (arXiv 2021) | 把位置信息变成 Q/K 旋转角度，使注意力天然编码相对位置并外推更长。 | [note][n_rope] · [source][s_rope] |
-| 训练/效率 | FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness (NeurIPS 2022) | 分块流式算 softmax，不落 n×n 注意力矩阵，显存近线性且结果不变。 | [note][n_flashattn] · [source][s_flashattn] |
-| 训练/效率 | Textbooks Are All You Need (arXiv 2023) | 采用教材式高质量示例与练习数据，使小模型在代码基准上达到竞争水平。 | [note][n_textbooks] · [source][s_textbooks] |
-| 训练/效率 | The Smol Training Playbook: The Secrets to Building World-Class LLMs (Hugging Face, 2025) | 总结从零训练小模型的关键风险点与工程闭环：目标设定、消融、自动评测与基础设施。 | [note][n_smol] · [source][s_smol] |
-| MoE/稀疏 | Outrageously Large Neural Networks: The Sparsely-Gated Mixture-of-Experts Layer (arXiv 2017) | 用门控路由只激活少数专家，在近似不增算力下扩大参数容量并提效。 | [note][n_moe] · [source][s_moe] |
-| MoE/稀疏 | Switch Transformers: Scaling to Trillion Parameter Models with Simple and Efficient Sparsity (JMLR) | 每 token 只选 1 个专家，简化 MoE 训练与通信，实现万亿参数稀疏扩容。 | [note][n_switch] · [source][s_switch] |
-| MoE/稀疏 | GLaM: Efficient Scaling of Language Models with Mixture-of-Experts (ICML 2022) | 以 MoE 在较低能耗与 FLOPs/token 下扩展容量，并在多任务 few-shot 上取得优势。 | [note][n_glam] · [source][s_glam] |
-| MoE/稀疏 | Sparse Upcycling: Training Mixture-of-Experts from Dense Checkpoints (arXiv 2022) | 从密集模型复制 MLP 成多专家再续训，小预算把 dense 变 MoE 提升性能。 | [note][n_sparse_upcycling] · [source][s_sparse_upcycling] |
-| MoE/稀疏 | Mixtral of Experts (arXiv 2024) | 8x7B 每 token 激活 2 专家，以较低推理成本逼近 70B 级效果并开源。 | [note][n_mixtral] · [source][s_mixtral] |
-| 对齐/偏好 | Training language models to follow instructions with human feedback (arXiv 2022) | 用人类示范+偏好反馈做 SFT+RLHF，让模型更听指令且更安全。 | [note][n_instructgpt] · [source][s_instructgpt] |
-| 对齐/偏好 | Direct Preference Optimization: Your Language Model is Secretly a Reward Model (arXiv 2023) | 将偏好对转为直接优化目标，避免 RL 堆栈，使训练流程更简洁且更稳定。 | [note][n_dpo] · [source][s_dpo] |
-| 能力外延 | Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks (arXiv 2020) | 把检索与生成端到端结合，让模型先找证据再回答，可替换文库更新知识。 | [note][n_rag] · [source][s_rag] |
-| 能力外延 | Chain-of-Thought Prompting Elicits Reasoning in Large Language Models (arXiv 2022) | 在提示里给出“思考过程”示例，可显著提升多步推理题的正确率。 | [note][n_cot] · [source][s_cot] |
-| 能力外延 | ReAct: Synergizing Reasoning and Acting in Language Models (ICLR 2023) | 将推理轨迹与可执行行动结合，降低无依据生成，在复杂任务中提升稳健性与可追溯性。 | [note][n_react] · [source][s_react] |
-| 能力外延 | DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning (arXiv 2025) | 用可自动判分任务做强化学习奖励，逼出推理能力，减少昂贵人工链路。 | [note][n_deepseek_r1] · [source][s_deepseek_r1] |
-| 能力外延 | Scaling Monosemanticity: Extracting Interpretable Features from Claude 3 Sonnet (Transformer Circuits, 2024) | 用稀疏字典把中间激活拆成可命名特征，并可调控特征稳定改变输出。 | [note][n_monosemanticity] · [source][s_monosemanticity] |
-| 能力外延 | The Platonic Representation Hypothesis (arXiv 2024) | 模型越强表示越对齐，跨模态/架构收敛到同一“世界统计”表征。 | [note][n_platonic] · [source][s_platonic] |
+| 标签 | 标题（含 venue/年份信息） | 一句话 takeaway | 笔记 | 原文 |
+| --- | --- | --- | --- | --- |
+| 基座/预训练 | Attention Is All You Need (NeurIPS 2017) | 用纯自注意力替代 RNN/CNN，提速提质，奠定 Transformer 基座。 | [note][n_aiayn] | [source][s_aiayn] |
+| 基座/预训练 | BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding (NAACL-HLT 2019) | 掩码词预测+句间关系预训练，统一 encoder 微调并刷新理解基准。 | [note][n_bert] | [source][s_bert] |
+| 基座/预训练 | Language Models are Unsupervised Multitask Learners (OpenAI Technical Report, 2019) | 扩大 LM 规模+更干净数据，纯下一个词预测也能免微调跨任务。 | [note][n_gpt2] | [source][s_gpt2] |
+| 基座/预训练 | Language Models are Few-Shot Learners (arXiv 2020) | 把模型做大后，靠提示+少量示例零微调做新任务，暴露推理与事实短板。 | [note][n_gpt3] | [source][s_gpt3] |
+| 基座/预训练 | LLaMA: Open and Efficient Foundation Language Models (arXiv 2023) | 只用公开数据长训练小模型，用更低推理成本逼近/超过更大闭源模型。 | [note][n_llama] | [source][s_llama] |
+| 基座/预训练 | Qwen3 Technical Report (arXiv 2025) | 同一模型内置 /think 与 /no_think 开关，用思考预算在延迟与能力间折中。 | [note][n_qwen3] | [source][s_qwen3] |
+| 规模/算力 | Scaling Laws for Neural Language Models (arXiv 2020) | 损失随参数/数据/算力呈稳定幂律，用公式做预算分配且不必训到收敛。 | [note][n_kaplan] | [source][s_kaplan] |
+| 规模/算力 | Training Compute-Optimal Large Language Models (arXiv 2022) | 指出大量大模型训练 tokens 不足；在固定算力下，更小模型配合更多 tokens 通常更具算力效率。 | [note][n_chinchilla] | [source][s_chinchilla] |
+| 规模/算力 | PaLM: Scaling Language Modeling with Pathways (arXiv 2022) | 用 Pathways 高效训稳 540B PaLM，并在部分任务上观察到规模跃迁。 | [note][n_palm] | [source][s_palm] |
+| 训练/效率 | RoFormer: Enhanced Transformer with Rotary Position Embedding (arXiv 2021) | 把位置信息变成 Q/K 旋转角度，使注意力天然编码相对位置并外推更长。 | [note][n_rope] | [source][s_rope] |
+| 训练/效率 | FlashAttention: Fast and Memory-Efficient Exact Attention with IO-Awareness (NeurIPS 2022) | 分块流式算 softmax，不落 n×n 注意力矩阵，显存近线性且结果不变。 | [note][n_flashattn] | [source][s_flashattn] |
+| 训练/效率 | Textbooks Are All You Need (arXiv 2023) | 采用教材式高质量示例与练习数据，使小模型在代码基准上达到竞争水平。 | [note][n_textbooks] | [source][s_textbooks] |
+| 训练/效率 | The Smol Training Playbook: The Secrets to Building World-Class LLMs (Hugging Face, 2025) | 总结从零训练小模型的关键风险点与工程闭环：目标设定、消融、自动评测与基础设施。 | [note][n_smol] | [source][s_smol] |
+| MoE/稀疏 | Outrageously Large Neural Networks: The Sparsely-Gated Mixture-of-Experts Layer (arXiv 2017) | 用门控路由只激活少数专家，在近似不增算力下扩大参数容量并提效。 | [note][n_moe] | [source][s_moe] |
+| MoE/稀疏 | Switch Transformers: Scaling to Trillion Parameter Models with Simple and Efficient Sparsity (JMLR) | 每 token 只选 1 个专家，简化 MoE 训练与通信，实现万亿参数稀疏扩容。 | [note][n_switch] | [source][s_switch] |
+| MoE/稀疏 | GLaM: Efficient Scaling of Language Models with Mixture-of-Experts (ICML 2022) | 以 MoE 在较低能耗与 FLOPs/token 下扩展容量，并在多任务 few-shot 上取得优势。 | [note][n_glam] | [source][s_glam] |
+| MoE/稀疏 | Sparse Upcycling: Training Mixture-of-Experts from Dense Checkpoints (arXiv 2022) | 从密集模型复制 MLP 成多专家再续训，小预算把 dense 变 MoE 提升性能。 | [note][n_sparse_upcycling] | [source][s_sparse_upcycling] |
+| MoE/稀疏 | Mixtral of Experts (arXiv 2024) | 8x7B 每 token 激活 2 专家，以较低推理成本逼近 70B 级效果并开源。 | [note][n_mixtral] | [source][s_mixtral] |
+| 对齐/偏好 | Training language models to follow instructions with human feedback (arXiv 2022) | 用人类示范+偏好反馈做 SFT+RLHF，让模型更听指令且更安全。 | [note][n_instructgpt] | [source][s_instructgpt] |
+| 对齐/偏好 | Direct Preference Optimization: Your Language Model is Secretly a Reward Model (arXiv 2023) | 将偏好对转为直接优化目标，避免 RL 堆栈，使训练流程更简洁且更稳定。 | [note][n_dpo] | [source][s_dpo] |
+| 能力外延 | Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks (arXiv 2020) | 把检索与生成端到端结合，让模型先找证据再回答，可替换文库更新知识。 | [note][n_rag] | [source][s_rag] |
+| 能力外延 | Chain-of-Thought Prompting Elicits Reasoning in Large Language Models (arXiv 2022) | 在提示里给出“思考过程”示例，可显著提升多步推理题的正确率。 | [note][n_cot] | [source][s_cot] |
+| 能力外延 | ReAct: Synergizing Reasoning and Acting in Language Models (ICLR 2023) | 将推理轨迹与可执行行动结合，降低无依据生成，在复杂任务中提升稳健性与可追溯性。 | [note][n_react] | [source][s_react] |
+| 能力外延 | DeepSeek-R1: Incentivizing Reasoning Capability in LLMs via Reinforcement Learning (arXiv 2025) | 用可自动判分任务做强化学习奖励，逼出推理能力，减少昂贵人工链路。 | [note][n_deepseek_r1] | [source][s_deepseek_r1] |
+| 能力外延 | Scaling Monosemanticity: Extracting Interpretable Features from Claude 3 Sonnet (Transformer Circuits, 2024) | 用稀疏字典把中间激活拆成可命名特征，并可调控特征稳定改变输出。 | [note][n_monosemanticity] | [source][s_monosemanticity] |
+| 能力外延 | The Platonic Representation Hypothesis (arXiv 2024) | 模型越强表示越对齐，跨模态/架构收敛到同一“世界统计”表征。 | [note][n_platonic] | [source][s_platonic] |
 
 <!-- Note links -->
 [n_aiayn]: notes/20260214T133121--paper-attention-is-all-you-need__read.org
