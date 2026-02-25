@@ -15,7 +15,6 @@ for Mastering LLMs and Transformers](https://x.com/TheAhmadOsman/status/20168937
 - 看主线时间线与关键拐点：从 `LANDSCAPE` 入手。
 - 按主题系统梳理与串联：读 `THEMES`，再跳转到 `notes/` 的具体论文笔记。
 - 快速定位单篇与回看 takeaways：用 `INDEX` 表格按标签检索与跳转。
-- 约束 TL;DR（常反复出现）：系统吞吐/显存/通信是硬门槛；数据质量与评测设计决定可解释的增益归因；固定预算下训练配比约束显著；对齐引入目标与分布权衡；检索/工具/多步执行把问题转为端到端可靠性治理（相关论文见 `INDEX`）。
 
 ## LANDSCAPE
 
