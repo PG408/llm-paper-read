@@ -1,6 +1,7 @@
-# LLM Paper Read (X-ray Survey)
+# LLM Paper Read
 
-> 这里收集了按 `ljg-xray-paper` 结构生成的论文阅读笔记（`notes` 目录下的 org 文件）。  
+> 仓库是根据 [@TheAhmadOsman: The Top 26 Essential Papers (+5 Bonus Resources)
+for Mastering LLMs and Transformers](https://x.com/TheAhmadOsman/status/2016893734986616915) 利用 [ljg-xray-paper skill](https://github.com/lijigang/ljg-skill-xray-paper/tree/master) 生成的论文阅读笔记（`notes` 目录下的 org 文件）。  
 > 本文档对上述笔记进行综述化整理：给出研究与工程主线、关键拐点，并提供可跳转索引；同时用简短 TL;DR 总结反复出现的约束条件。
 
 ## PLAIN TALK
